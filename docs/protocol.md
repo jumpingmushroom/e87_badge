@@ -302,15 +302,142 @@ Yes, two CRCs:
    `firmwareHasCrc16` flags are true (both true in the observed session).
 There is no SHA-1 or CRC32. No CRC in the frame trailer.
 
-## Client implementation notes (draft)
+## Phase 1 exit status — protocol confirmed working
 
-Placeholder — will be completed in task 9.
+As of 2026-04-20, `spike/e87_client.py` uploads arbitrary JPEG images to the badge and
+renders them as new gallery entries. Two images verified on hardware:
+
+1. `docs/captures/01-solid-red-360.png` — 1.1 KB as PNG, encoded to 1.1 KB JPEG, 3 chunks
+2. Arbitrary 360×360 blue-and-yellow-circle — 7.7 KB JPEG, 16 chunks, 3 windowed bursts
+
+So the remainder of this document should be read as a conceptual description; for concrete
+wire behaviour the authoritative references are the working client (`spike/e87_client.py`),
+the MIT-licensed upstream (`hybridherbst/web-bluetooth-e87`, `web/src/lib/e87-protocol.ts`),
+and the validated auth cipher port (`spike/jieli_auth.py` + test vector in
+`tests/test_jieli_auth.py`).
+
+## Client implementation notes
+
+### Authentication (verified)
+
+The 16-byte values in the `0x00`/`0x01` handshake packets are **real AES-like block-cipher
+output** from a bespoke JieLi algorithm, not AES. It is implemented in `libjl_auth.so`
+(ARM64 binary in the Zrun split APK) with these parameters:
+
+- Three 256-byte lookup tables (`KS_TABLE`, `SBOX`, `ISBOX`) at `.so` offsets
+  `0x1B4C`, `0x1C4C`, `0x1D4C`.
+- Hardcoded static key `06 77 5F 87 91 8D D4 23 00 5D F1 D8 CF 0C 14 2B`.
+- Hardcoded 6-byte magic `11 22 33 33 22 11` used as the repeated-pattern second key.
+- 16 rounds with rotate-3-left, SBOX/ISBOX swap, Fibonacci-butterfly mix, `0x9999` mask.
+
+Test vector (from the real Zrun capture in `docs/captures/01-solid-red-360.log`):
+- challenge `70 B7 59 92 E0 5E A7 8F EC 53 3B A1 29 79 B5 90`
+- response `FF E9 E6 C8 0C E1 F4 0F 5C CE AE 20 83 1C 58 79`
+
+Our Python port (`spike/jieli_auth.py`) produces this response byte-exactly for the given
+challenge. Same key across our device and the upstream maintainer's device, so likely
+universal for this SDK revision. If a future vendor customizes the key, extract it from
+the target device's own `libjl_auth.so` at the same offset.
+
+### Advertising-name is "E87"
+
+The badge's GAP advertising name is literally `E87`, visible in the **scan response**.
+Android's system Bluetooth settings hides this because Zrun scans and connects directly
+using the Filter Accept List without populating the user-facing list — but BlueZ / any
+active scanner sees it. Home Assistant's `bluetooth:` manifest matcher can safely use
+`{ "local_name": "E87" }` for auto-discovery. Fallback: match on service UUID
+`0000ae00-0000-1000-8000-00805f9b34fb`.
+
+### MTU
+
+BlueZ on Linux does not auto-negotiate a higher MTU for `write-without-response` on
+GATT characteristics; `bleak` reports `mtu_size=23` even when larger would work. In
+practice the badge accepts writes up to **~500 bytes** (close to MTU=517 as negotiated by
+Zrun on Android) — BlueZ sends these as multi-packet L2CAP fragments. No explicit MTU
+negotiation is required from our client code for the upload to succeed.
+
+### Image encoding
+
+- Resize the input to **368×368** (not 360×360 as suggested by the Amazon product
+  description, and not 384×384 as upstream's README title claims). `spike/e87_client.py`
+  uses Pillow's `LANCZOS` resample.
+- Encode as **JPEG** with quality ~88. Typical output: 1–15 KB for images up to full frame.
+  The whole JPEG file is what the badge stores and displays. No further container or
+  wrapper.
+- Orientation: 360° round panel; top of JPEG maps to top of badge. No rotation needed.
+
+### Upload flow (high level)
+
+Upstream's full state machine is the authoritative reference. The rough 9-phase sequence
+that `spike/e87_client.py` follows:
+
+1. **Connect, subscribe to all four notify characteristics** (`AE02`, `FD01`, `FD03`,
+   `FD05`). FD04's CCCD may fail with "not supported" on some platforms; ignored.
+2. **Authentication** (mutual handshake as described above).
+3. **Phase 1:** send `0x06` (CMD_DISCONNECT_CLASSIC_BT) to reset the auth flag server-side.
+4. **Phase 2:** three FD02 control writes (time sync / session hello / keepalive).
+5. **Phase 3:** `0x03` (CMD_GET_TARGET_INFO) — device info probe. Response identifies the
+   JieLi SDK build (`jl_sdk_ac697_publish` in our case).
+6. **Phase 4:** `0x07` (CMD_GET_SYS_INFO) — system info probe.
+7. **Phase 5:** FD02 bootstrap — wait for ready signal (0x9E…C7 pattern).
+8. **Phase 6:** `0x21` (CMD_NOTIFY_PREPARE_ENV) — arm the file-transfer subsystem.
+9. **Phase 7:** `0x27` (CMD_DEV_PARAM_EXTEND) — negotiate CRC16 and protocol flags.
+10. **Phase 8:** `0x1B` (CMD_START_LARGE_FILE_TRANSFER) — announce file with size,
+    CRC-16/XMODEM of the file, and a generated temp filename like `ac263d.tmp`. The badge
+    responds with a chunk-size hint (observed: **490 bytes**, not MTU-derived).
+11. **Phase 9:** data transfer with window-based flow control:
+    - Each data frame is `FE DC BA 80 01 LEN seq 1D slot CRC16 <chunk_bytes> EF`.
+    - Chunks batched into windows (badge advertises window size in its ack; ~3920 bytes
+      = 8 chunks of 490).
+    - Badge emits `0x1D` notifications on AE02 with the next-offset pointer and window
+      size; client sends that window, then waits for the next ack.
+    - Final chunk advertises the trailing `FF D9` JPEG End-of-Image marker.
+12. **Phase 10 — Completion handshake:**
+    - Badge notifies `0xC0 0x20` (FILE_COMPLETE) with a device sequence number.
+    - Client responds with `0x00 0x20` containing a UTF-16LE path string
+      (`\Udd5c\U55...jpg\0`) that names the final location the badge stored the file.
+    - Badge notifies `0xC0 0x1C` (SESSION_CLOSE).
+    - Client responds `0x00 0x1C`, disconnects.
+
+### CRC-16/XMODEM
+
+Standard CRC-16/XMODEM (polynomial `0x1021`, init `0x0000`, no reflection, no final XOR).
+Verified against the test vector `CRC16("123456789") = 0x31C3`. Used in two places:
+
+- Whole-file CRC in the `0x1B` body (2 bytes, big-endian).
+- Per-chunk CRC in each data frame after the chunk_index (2 bytes, big-endian).
+
+### Filenames
+
+The temp filename sent in `0x1B` is generated by the client as `<6-hex-chars>.tmp` (hex
+of a random 3-byte prefix). The badge responds in its `0x20` ack with the final filename
+it stored the file under, which is arbitrary-looking (e.g.
+`\5c\55 32 30 32 36 30 34 32 30 32 33 33 39 32 37 2e 6a 70 67 00` in UTF-16LE —
+the `5c55` prefix is not ASCII, it is the two bytes of the Chinese char `囜` (U+555C);
+the rest is the date-time `20260420233927.jpg`). The client echoes this back verbatim
+in its own `0x20` response.
+
+## JieLi RCSP side-channel (`FD01`/`FD02`/`FD03`/`FD05`)
+
+The service `c2e6fd00-e966-1000-8000-bef9c223df6a` is standard JieLi RCSP. For image
+upload we send three short FD02 commands in Phase 2 (time-sync, session-hello, keep-alive)
+and one in Phase 5 (bootstrap). All four are verbatim hex blobs from upstream; their
+semantics are unused by our client.
+
+Other RCSP commands (battery level via AC697 system events, firmware version, file
+listing) are documented in upstream's README and JieLi's own `jl_rcsp` SDK; out of
+scope for v1 of the image uploader but useful for phase 3 (Home Assistant sensor entities).
 
 ## Out of scope (observed but not used in v1)
 
-- JieLi RCSP traffic on the 128-bit service: firmware version queries, battery level,
-  possibly time sync. Phase 2 may expose these as sensor entities later.
-- Handle `0x0011` (JieLi notify+write+read) — purpose unknown, untouched during image
-  upload.
-- The post-upload notifications `fedcba 0020…` and `fedcba 001c…` — likely
-  "image rendered" / "ready for next" signals; not needed for a fire-and-forget client.
+- Most JieLi RCSP traffic on the 128-bit service: battery level sensing (via AC697 system
+  events), firmware version queries, OTA upgrade. Phase 2 (Home Assistant integration)
+  may expose these as sensor entities.
+- AVI / multi-frame / video upload — the badge supports animated uploads; our client
+  sends a single JPEG at a time. The upstream `e87-protocol.ts` has the code if/when
+  we want this.
+- Pattern / QR / sequence modes from upstream's UI.
+- JPEG quality tuning — we use a fixed `quality=88`. Larger quality produces bigger files;
+  the badge's practical max file size is unknown.
+- Retry policies for mid-transfer disconnects — current client errors out; a real library
+  would reconnect and resume (or retry the whole upload).
