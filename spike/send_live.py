@@ -23,6 +23,12 @@ from spike.jieli_auth import get_encrypted_auth_data
 WRITE_CHAR_UUID = "0000ae01-0000-1000-8000-00805f9b34fb"
 NOTIFY_CHAR_UUID = "0000ae02-0000-1000-8000-00805f9b34fb"
 
+# JieLi RCSP side-channel (proprietary 128-bit service). The capture shows Zrun
+# sends a small "ready" packet here immediately after the AE01 upload finishes —
+# hypothesis: that's what tells the badge to promote the staged file to display.
+JL_WRITE_CHAR_UUID = "c2e6fd02-e966-1000-8000-bef9c223df6a"
+JL_POST_UPLOAD_PING = bytes.fromhex("9ed20ac6010001")
+
 SESSION_INIT = bytes.fromhex("fedcbac00600020001ef")
 PASS_TOKEN = b"\x02pass"
 
@@ -135,6 +141,16 @@ async def replay_post_auth(client: BleakClient, notifies: NotifyQueue) -> None:
     await asyncio.sleep(1.5)
     for leftover in notifies.try_drain():
         logging.info("← (late) %s", leftover.hex())
+
+    # Ping the JieLi side-channel — in the capture this lands after the AE01
+    # STOP_LARGE_FILE_TRANSFER and is the most likely trigger for the badge to
+    # promote the staged file to the active display slot.
+    logging.info("→ JL post-upload ping %s", JL_POST_UPLOAD_PING.hex())
+    try:
+        await client.write_gatt_char(JL_WRITE_CHAR_UUID, JL_POST_UPLOAD_PING, response=False)
+    except Exception as e:
+        logging.warning("JL ping failed (characteristic may require pairing): %s", e)
+    await asyncio.sleep(1.0)
 
 
 async def run(mac: str) -> None:
