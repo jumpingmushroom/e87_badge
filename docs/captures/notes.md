@@ -5,6 +5,16 @@ the top. Timestamp each entry.
 
 ---
 
+## 2026-04-20 — HCI snoop enabled
+
+- Phone: Samsung Galaxy S24 Ultra, Android 18
+- Settings path: Settings → Developer options → "Enable Bluetooth HCI snoop log" (full, not
+  filtered — filtered mode hides payloads)
+- No reboot required
+- Bluetooth toggled OFF then ON to start a fresh log
+- Expected log path on Samsung: `/data/misc/bluetooth/logs/btsnoop_hci.log` (accessible
+  via `adb bugreport` — direct `adb pull` from this path typically fails without root)
+
 ## 2026-04-20 — Baseline
 
 - Zrun version: 2.2.5
