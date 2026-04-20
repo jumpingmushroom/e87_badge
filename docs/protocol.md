@@ -1,14 +1,9 @@
 # E-Badge E87 BLE Protocol
 
-> **Work in progress.** This document captures what is known about the BLE protocol used by
-> the Zrun app (`com.zijun.zrun`) to drive the generic E-Badge E87 round LCD pin. It will
-> be rewritten as more is learned; treat it as a living document until the phase 1 exit
-> criterion (arbitrary-PNG upload from a Python client) is met.
->
 > Findings here are derived from `docs/captures/01-solid-red-360.log` (a Zrun upload of a
-> 360×360 solid red PNG from Samsung Galaxy S24 Ultra, Android 18, Zrun 2.2.5). Every
-> claim below can be traced back to that capture; byte offsets cite
-> `docs/captures/01-solid-red-360.ae01-writes.txt` unless noted.
+> 360×360 solid red PNG from Samsung Galaxy S24 Ultra, Android 18, Zrun 2.2.5) and from
+> static analysis of the Zrun APK (`docs/captures/jadx-notes.md`). Every capture claim can
+> be traced back to `docs/captures/01-solid-red-360.ae01-writes.txt` unless noted.
 
 ## Hardware identification
 
@@ -89,80 +84,113 @@ product firmware).
 ## Framing — image-upload service (`0x00ae`)
 
 All packets on characteristic `0xae01` (handle `0x0006`, client→badge) and notify
-characteristic `0xae02` (handle `0x0008`, badge→client) share the same envelope:
+characteristic `0xae02` (handle `0x0008`, badge→client) share the same RCSP envelope
+(confirmed by `ParseHelper.packSendBasePacket()` in the Zrun APK):
 
 ```
- +-------+--------+---------+---------+-----+
- | FE DC | BA     | OPCODE  | BODY…   | EF  |
- +-------+--------+---------+---------+-----+
-   magic (3 bytes)    (1 byte)  (N B)   (1 B)
+ +----------+-------+--------+--------------+---------+----+
+ | FE DC BA | flags | opCode | paramLen(2B) | body…   | EF |
+ +----------+-------+--------+--------------+---------+----+
+   magic(3B)  (1B)    (1B)   big-endian 16b  (N bytes) (1B)
 ```
 
 - **Magic header:** `FE DC BA` (3 bytes, always present).
-- **Opcode byte:**
-  - `0xC0` — control/command frame (client → badge or badge → client as ack)
-  - `0x80` — image-data frame (client → badge) or bulk-data notification (badge → client).
-- **Trailer:** `0xEF` (1 byte) at the end of every frame.
-- **Body structure** differs by opcode and is described below.
+- **`flags` byte:**
+  - bit 7 = direction: `1` = request (phone→badge), `0` = response (badge→phone)
+  - bit 6 = hasResponse: `1` = phone expects an ack notification
+  - Common values: `0xC0` (request + hasResponse), `0x80` (request, no ack expected)
+- **`opCode`** — RCSP command ID (see table below); **not** 0xC0 or 0x80 (those are flags).
+- **`paramLen`** — 16-bit big-endian count of body bytes.
+- **`body`** — layout depends on direction:
+  - Request: `[opCodeSn] [xmOpCode if opCode==1] [paramData...]`
+  - Response: `[status] [opCodeSn] [xmOpCode if opCode==1] [paramData...]`
+- **Trailer:** `0xEF` (1 byte). The `0xEF` in paramLen (e.g. `01 EF` = 495) is numeric,
+  not the trailer; the parser uses paramLen to know where the frame ends.
+- **Total frame size** = 8 + paramLen bytes.
 
-### Body — control (`0xC0`)
+### RCSP opCodes used in image upload session
 
-Observed control packets (phone → badge, handle 0x0006, from `*.ae01-writes.txt`):
-
-| t (s) | Hex | Likely meaning |
+| opCode (hex) | Name | Meaning |
 |---|---|---|
-| 260.87 | `fedcba c0 0600 02 0001 ef`                            | session init / hello |
-| 261.56 | `fedcba c0 0300 06 46ffffffff 00 ef`                   | unknown — contains `0xFFFFFFFF` (all-white color pattern?) |
-| 261.63 | `fedcba c0 0700 06 47ff000000 04 ef`                   | unknown — mirror of above with different constants |
-| 282.06 | `fedcba c0 2100 02 4800 ef`                            | pre-image-upload cmd |
-| 282.44 | `fedcba c0 2700 07 49 00000000 02 01 ef`              | pre-image-upload cmd (contains image size?) |
-| 282.50 | `fedcba c0 1b00 14 4a 00000ab9 32af 6464 6264 6266…` | pre-image-upload cmd — **20-byte blob, possibly SHA-1 of image** |
-| 284.75 | `fedcba 0020 0026 0034 5c5566…`                        | post-upload — unclear purpose |
-| 284.86 | `fedcba 001c 0002 0035 ef`                             | post-upload trailer |
+| `0x01` | CMD_DATA | Raw data transport; actual sub-command in `xmOpCode` byte |
+| `0x03` | CMD_GET_TARGET_INFO | Probe device info (used as session opener) |
+| `0x06` | CMD_DISCONNECT_CLASSIC_BT | Session-init frame (repurposed opCode) |
+| `0x07` | CMD_GET_SYS_INFO | Query system info |
+| `0x1B` | CMD_START_LARGE_FILE_TRANSFER | Begin file transfer; carries size + CRC16 + filename |
+| `0x1C` | CMD_STOP_LARGE_FILE_TRANSFER | End file transfer |
+| `0x1D` | CMD_LARGE_FILE_TRANSFER_OP | xmOpCode for each data chunk inside CMD_DATA |
+| `0x21` | CMD_NOTIFY_PREPARE_ENV | Prepare environment for file transfer |
+| `0x27` | CMD_DEV_PARAM_EXTEND | Negotiate capabilities (CRC16 support, protocol version) |
 
-Structure is not yet fully decoded. Observations:
-- Byte immediately after opcode (`06`, `03`, `07`, `21`, `27`, `1b`) appears to be a
-  **sub-opcode / command ID**, tracked as hex values 0x06 / 0x03 / 0x07 / 0x21 / 0x27 /
-  0x1b / 0x00 (!).
-- The next byte is always `0x00`, suggesting a 16-bit little-endian sub-opcode or a
-  length field.
-- A sequence byte appears to increment across control frames during a session (`46`,
-  `47`, `48`, `49`, `4a`, `4b`, `4c`, `4d`, `4e`, `4f`, `50`) — the same sequence
-  continues into the data frames (`4b`…`50`), so it is a shared monotonic counter, not
-  a per-opcode counter.
+### Control frames decoded
 
-Phase 6 (jadx decompile) will map each sub-opcode to a named command.
+| t (s) | flags | opCode | opCodeSn | paramData | RCSP meaning |
+|---|---|---|---|---|---|
+| 260.87 | C0 | 06 | 00 | `01` | Session init (hard-coded `FEDCBAC00600020001EF`) |
+| 261.56 | C0 | 03 | 46 | `ffffffff 00` | CMD_GET_TARGET_INFO — device info request |
+| 261.63 | C0 | 07 | 47 | `ff000000 04` | CMD_GET_SYS_INFO — system info request |
+| 282.06 | C0 | 21 | 48 | `00` | CMD_NOTIFY_PREPARE_ENV — arm file transfer |
+| 282.44 | C0 | 27 | 49 | `00000000 02 01` | CMD_DEV_PARAM_EXTEND — negotiate CRC16 + version |
+| 282.50 | C0 | 1B | 4A | see below | CMD_START_LARGE_FILE_TRANSFER |
+| 284.75 | 00 | 20 | 34 | UTF-16 path | Post-upload path report (badge→phone, response) |
+| 284.86 | 00 | 1C | 00 | `35` | CMD_STOP_LARGE_FILE_TRANSFER ack |
 
-### Body — image data (`0x80`)
-
-Observed data packets (phone → badge, handle 0x0006):
-
+**CMD_START_LARGE_FILE_TRANSFER (0x1B) body** at t=282.50:
 ```
- fedcba 80 01 01 XX YY 1D ZZ  <JPEG or payload bytes>  ef
+opCodeSn=4A  |  size(4B big-endian) = 00 00 0A B9 = 2745 bytes
+             |  crc16(2B big-endian) = 32 AF = 0x32AF  (CRC16 of entire file)
+             |  filename = "ddbdbf24.tmp\0"  (null-terminated ASCII, 13 bytes)
 ```
+The `hash` field in `StartLargeFileTransferParam` is actually the temp filename, not a
+cryptographic hash. The CRC16 is computed over the complete JPEG payload.
 
-- `01 01` — purpose unclear, constant across all image-data frames observed.
-- `XX` — varies: usually `EF` (overlaps with trailer marker — probably a 1-byte length
-  indicator, not the trailer; this explains the "inner EF" problem when naively splitting
-  on EF). On the 308-byte final chunk it was `2C` instead.
-- `YY` — monotonic sequence number shared with control frames (saw `4B`, `4C`, `4D`, `4E`,
-  `4F`, `50`).
-- `1D ZZ` — 2-byte field, `ZZ` increments 00, 01, 02, 03, 04 across the first 5
-  image-data frames then resets to `00` on the 6th (frame that begins a fresh JPEG),
-  suggesting **`ZZ` is a per-image chunk index and `1D` is its type/image-slot marker**.
+### Data frames decoded (opCode=0x01, xmOpCode=0x1D)
 
-**The payload is JPEG.** Direct evidence: chunk 6 (frame at t=284.58, 503 bytes) payload
-starts at offset 10 with `FF D8 FF E0 00 10 4A 46 49 46 …` — the JPEG Start-of-Image (SOI)
-marker followed by JFIF APP0 header. The prior 5 chunks + 1 shorter chunk contain JPEG
-bytes without the SOI — they are either (a) a different JPEG sent first (e.g. a preview
-frame, or the previous-image-buffer being re-played), or (b) tail fragments of a JPEG
-whose SOI was in an earlier unseen write. **This is not yet resolved** and is a priority
-for task 6 (jadx).
+Each data frame body:
+```
+[opCodeSn]  [xmOpCode=0x1D]  [chunk_index]  [crc16_hi]  [crc16_lo]  [chunk_data...]
+```
+- `opCodeSn` — shared monotonic session counter (continues from control frames).
+- `xmOpCode = 0x1D` — CMD_LARGE_FILE_TRANSFER_OP; identifies this as a file-transfer chunk.
+- `chunk_index` — 0-based index within the current JPEG transfer; resets to 0 for each new file.
+- `crc16` (2 bytes big-endian) — CRC16 of this chunk's data only (per-chunk integrity).
+- `chunk_data` — raw JPEG bytes for this chunk.
 
-The last 503-byte image chunk ends with `… 72d10a162434e125f1ef`. JPEG's
-End-of-Image marker `FF D9` is visible on the 308-byte chunk (t=283.77) at the
-tail: `… a28a0028a28a00 FF D9 ef` — so there is at least one complete JPEG (chunks 1–5)
-of ~2.2 KB uncompressed frame, and a second partial JPEG starting in chunk 6.
+Frame paramLen = `01 EF` = 495 for full-size chunks; `01 2C` = 300 for the shorter last chunk.
+Total frame bytes = 8 + paramLen = 503 or 308 respectively.
+
+Sample decoding (t=282.981, frame 10, first data chunk):
+```
+FE DC BA  80  01  01 EF  4B  1D  00  B7 04  <490 JPEG bytes>  EF
+          ^   ^   ^       ^   ^   ^   ^      ^
+        flags opC pLen  opCSn xmO idx crc16  JPEG data
+```
+- flags=0x80 (request, no hasResponse), opCode=0x01, paramLen=495
+- opCodeSn=0x4B, xmOpCode=0x1D, chunk_index=0, crc16=0xB704
+- JPEG continuation bytes (not SOI — this is mid-JPEG from a prior split)
+
+Sample decoding (t=284.582, frame 15, second JPEG start):
+```
+FE DC BA  80  01  01 EF  50  1D  00  2C 12  FF D8 FF E0 ...  EF
+```
+- opCodeSn=0x50 (resets chunk_index to 0x00 for new JPEG), crc16=0x2C12
+- JPEG SOI `FF D8` visible — start of second JPEG file
+
+**The payload is JPEG.** The 308-byte chunk at t=283.77 ends with JPEG EOI `FF D9` before
+the frame trailer `EF`. The 503-byte chunk at t=284.58 starts with JPEG SOI `FF D8 FF E0
+00 10 4A 46 49 46` (JFIF APP0 header).
+
+### Two-JPEG explanation
+
+The session sends **two complete JPEG files** sequentially:
+1. **JPEG #1** (chunks 0–4, opCodeSn 0x4B–0x4F): ~2.2 KB, ends with FF D9 in chunk 4.
+2. **JPEG #2** (chunks 0–N, opCodeSn 0x50+): chunk_index resets to 0, starts with FF D8 SOI.
+
+Both are sent on the same xmOpCode=0x1D channel. The `cr3` (jl_filebrowse) library
+in the Zrun APK issues two `TransferTask` runs when saving to the badge's "BAG" folder.
+This likely corresponds to a thumbnail (first JPEG) and the main display image (second JPEG),
+but the exact role assignment requires further testing. A Python client replaying the
+session must send both JPEGs in order.
 
 ## Authentication (control)
 
@@ -171,69 +199,108 @@ Before any image upload, an application-layer handshake runs over handles `0x000
 
 | t (s) | Direction | Payload | Meaning |
 |---|---|---|---|
-| 260.87 | phone → badge | `fedcba c0 0600 02 0001 ef` | session init |
+| 260.87 | phone → badge | `fedcba c0 0600 02 0001 ef` | session init (RCSP frame) |
 | 261.37 | phone → badge | `00 <16 random bytes>` | phone challenge (no magic envelope, prefixed `0x00`) |
 | 261.41 | badge → phone | `01 <16 random bytes>` | badge response/challenge (prefixed `0x01`) |
-| 261.41 | phone → badge | `02 70617373` | ASCII `"\x02pass"` — literal string |
-| 261.47 | badge → phone | `00 <16 random bytes>` | (badge's own challenge, prefixed `0x00`) |
+| 261.41 | phone → badge | `02 70617373` | ASCII `"\x02pass"` — auth accepted signal |
+| 261.47 | badge → phone | `00 <16 random bytes>` | badge's own challenge (prefixed `0x00`) |
 | 261.48 | phone → badge | `01 <16 random bytes>` | phone response (prefixed `0x01`) |
 | 261.53 | badge → phone | `02 70617373` | badge echoes `"\x02pass"` — auth accepted |
 
-**Interpretation (tentative):** this looks like a challenge-response handshake where
-each side sends a 16-byte challenge prefixed with `0x00`, replies to the other side's
-challenge prefixed with `0x01`, and then both sides send the literal string `"pass"`
-prefixed with `0x02` to signal "authentication passed". The 16-byte payloads are
-possibly:
-- AES-128 challenge/response (classical), OR
-- Random material for session key derivation, OR
-- Not cryptographic at all — a pure challenge-echo with the "pass" string as the only
-  real auth token.
+**The 16-byte challenge/response is real cryptography.** The Zrun APK (`RcspAuth.java`)
+calls two JNI native methods in `libjl_auth.so`:
+```java
+public native byte[] getRandomAuthData();         // generates 16-byte random challenge
+public native byte[] getEncryptedAuthData(byte[] bArr);  // computes response to badge challenge
+```
+The algorithm cannot be read from Java; disassembly of `libjl_auth.so` is required to
+extract the key and algorithm. The literal ASCII `"pass"` (`\x02 70 61 73 73`) is the
+acceptance token sent by both sides *after* the crypto rounds complete — it is not the
+only check.
 
-The literal ASCII `"pass"` echo strongly suggests this is a weak or ceremonial
-handshake rather than real cryptography. Phase 6 (jadx) will confirm.
+**For a Python client:** empirical testing is needed to determine whether the badge
+enforces replay protection (fresh nonce each connection) or whether any fixed 16-byte
+value plus the `\x02pass` token is accepted. A captured working sequence is:
+```
+phone→badge: 00 70b759 92e05ea7 8fec533b a12979b5 90   (0x00 + 16 bytes)
+phone→badge: 02 70617373                                (0x02 + "pass")
+phone→badge: 01 dd08e8 78b7cfdc 5bef67cb fe80c993 b3   (0x01 + 16 bytes)
+```
 
 **These 6 packets do NOT use the `fedcba…ef` envelope.** They are raw writes with the
-single-byte prefix (`00`, `01`, `02`). Only the control and image-data frames after the
+single-byte prefix (`00`, `01`, `02`). Only the RCSP control and data frames after the
 handshake use the envelope.
 
 ## Notification behaviour
 
 The badge sends frequent notifications on `0x0008` during and between operations. Pattern:
-- Each client control frame (`0xC0`) elicits a matching badge notification with opcode
-  `0x00` (still within the `fedcba…ef` envelope). Example at t=282.97: client sends
-  `fedcba c0 1b00 14 4a …`, badge replies at t=282.97 with `fedcba 001b 00 04 004a 01eaef`.
-- During image data bursts (`0x80`), the badge emits opcode-`0x80` notifications (data
-  acks). Example at t=282.97: `fedcba 80 1d 00 08 32 00 0f 50 00 00 01 ea ef` immediately
-  after the first data chunk.
-- A post-upload notification at t=284.84 contains opcode `0xC0 20 00 01 34 ef` — likely a
-  "transfer complete" signal.
+- Each client control frame (flags=0xC0) elicits a matching badge notification (flags=0x00,
+  response direction). Example at t=282.97: client sends `fedcba c0 1b 00 14 4a …`, badge
+  replies `fedcba 00 1b 00 04 00 4a 01 ea ef` (flags=0x00, opCode=0x1B, status=0x00).
+- During image data bursts (flags=0x80), the badge emits flags=0x80 notifications (data
+  acks). Example: `fedcba 80 1d 00 08 32 00 0f 50 00 00 01 ea ef` immediately after the
+  first data chunk.
+- A post-upload notification at t=284.84 contains flags=0xC0, opCode=0x20 with paramData
+  `01 34` — likely a "transfer complete" signal.
 
 ## Observed write summary (for task 7 replay)
 
 - Total ATT operations on handle `0x000f` connection: 140 packets
-- Client writes to handle `0x0006` (target for image upload): **28 writes**
-  - 17 are control frames (`0xC0`)
-  - 6 are image-data frames (`0x80`)
-  - 5 are the pre-handshake auth packets (no envelope)
+- Client writes to handle `0x0006` (target for image upload): **17 RCSP frames + 6 data frames + 5 auth packets = 28 writes**
+  - 17 are control frames (flags=0xC0, opCode varies: 0x06/0x03/0x07/0x21/0x27/0x1B/0x1C)
+  - 6 are image-data frames (flags=0x80, opCode=0x01 CMD_DATA, xmOpCode=0x1D)
+  - 5 are the pre-handshake auth packets (no envelope: raw `00`/`01`/`02` prefix)
 - Notifications received on handle `0x0008`: 12 plain notifications + 18 indications
-- Writes to handle `0x000c` (JieLi RCSP): 11 (not related to image upload)
+- Writes to handle `0x000c` (JieLi RCSP 128-bit service): 11 (not related to image upload)
 
-## Open questions (priority order for task 6 / jadx)
+## Questions resolved by jadx analysis
 
-1. **Is the 16-byte challenge/response real cryptography?** If yes, we need to reproduce
-   the algorithm (hopefully a simple fixed-key AES). If no (hypothesis: the "pass" string
-   is the only real check), we can skip the 16-byte exchange entirely or replay any
-   constants.
-2. **What do each of the control sub-opcodes (`0x06`, `0x03`, `0x07`, `0x21`, `0x27`,
-   `0x1b`, `0x00`) do?** In particular which one is "begin image transfer" and what are
-   its parameters — image dimensions, byte size, SHA/CRC.
-3. **Why are there two JPEG blocks in the capture (5 chunks then 1 more starting with
-   SOI)?** Are we seeing preview+full, or partial+full, or something else?
-4. **What is the sequence-counter `YY` reset rule?** Does it reset per session, per
-   image, or monotonically increment forever?
-5. **Is there a CRC in the trailer or in the sub-command payload?** The 20-byte blob in
-   frame 282.50 (`fedcba c0 1b00 14 4a 00000ab9 32af 6464…`) is a candidate for a SHA-1
-   or CRC32 of the image payload.
+The following questions from the initial analysis are now answered.
+
+**Q1 — Is the 16-byte challenge/response real cryptography?**
+Yes. `RcspAuth.getRandomAuthData()` and `RcspAuth.getEncryptedAuthData()` are JNI native
+methods in `libjl_auth.so`. The algorithm is genuinely cryptographic. The literal `"pass"`
+token is sent *after* both challenge-response rounds succeed, not instead of them. For a
+Python client, try replaying the captured fixed sequences first; if the badge rejects them,
+disassembly of `libjl_auth.so` is the next step.
+
+**Q2 — What do each control sub-opcode do?**
+The "sub-opcode" is the `opCode` field (byte after flags), not a sub-field. Decoded:
+- `0x06` CMD_DISCONNECT_CLASSIC_BLUETOOTH — session-init frame (hard-coded constant in RcspAuth)
+- `0x03` CMD_GET_TARGET_INFO — device info query (probe)
+- `0x07` CMD_GET_SYS_INFO — system info query
+- `0x21` CMD_NOTIFY_PREPARE_ENV — arm the file transfer subsystem (1-byte param `00`)
+- `0x27` CMD_DEV_PARAM_EXTEND — negotiate CRC16 support and protocol version
+- `0x1B` CMD_START_LARGE_FILE_TRANSFER — announce file: size(4B) + CRC16(2B) + filename(N bytes null-terminated)
+- `0x1C` CMD_STOP_LARGE_FILE_TRANSFER — close the file transfer
+- `0x1D` appears as `xmOpCode` in every data frame, identifying them as large-file chunks
+
+The `0x1B` paramData carries the **CRC16** of the entire file and the **byte size** of the
+file, not a SHA hash. See "Control frames decoded" table above.
+
+**Q3 — Why are there two JPEG blocks?**
+The badge's `cr3` (jl_filebrowse) library sends two separate JPEG files to the badge's
+"BAG" directory. Chunk index resets to 0 for the second file. Both use xmOpCode=0x1D.
+JPEG #1 (chunks 0–4, seq 0x4B–0x4F) is ~2.2 KB and ends with FF D9.
+JPEG #2 (chunk 0+, seq 0x50+) starts with JPEG SOI FF D8 and is the main display image
+(or a thumbnail/preview variant). A Python client must send both files.
+
+**Q4 — What is the sequence-counter reset rule?**
+The `opCodeSn` byte is a shared monotonic counter across the entire session (both control
+and data frames). It does NOT reset between JPEG transfers. It starts at `0x00` for the
+hard-coded session-init frame, then begins at some value (observed: `0x46` = 70) for
+regular commands. It increments by 1 per frame and wraps `0xFF → 0x00`.
+The chunk_index (separate field within data frame body) resets to 0 for each new file.
+
+**Q5 — Is there a CRC/hash?**
+Yes, two CRCs:
+1. **Per-file CRC16** in CMD_START_LARGE_FILE_TRANSFER (0x1B) body: 2-byte big-endian
+   CRC16 of the complete JPEG file, computed by `CryptoUtil.CRC16(file_bytes, (short)0)`.
+   Observed value: `32 AF` = 0x32AF for the 2745-byte JPEG.
+2. **Per-chunk CRC16** in each data frame: 2 bytes big-endian after chunk_index, computed
+   by `CryptoUtil.CRC16(chunk_bytes, (short)0)`. Present when both `appHasCrc16` and
+   `firmwareHasCrc16` flags are true (both true in the observed session).
+There is no SHA-1 or CRC32. No CRC in the frame trailer.
 
 ## Client implementation notes (draft)
 
