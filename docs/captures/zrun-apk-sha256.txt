@@ -1,0 +1,11 @@
+59436cf584cac68cab75d75ee2460a08025530ab94e183a46388c5eedc50feaf  zrun.apk
+
+APK: com.zijun.zrun (Zrun)
+Version (from Play Store): 2.2.5
+Pulled: 2026-04-20, Samsung Galaxy S24 Ultra, Android 18
+Pull method: `adb exec-out cat /data/app/.../base.apk > zrun.apk` (Samsung blocks direct
+`adb pull` from /data/app without root; the exec-out cat workaround succeeds because
+`shell` user can read but not stat the path in Samsung's SELinux policy).
+
+The APK itself is NOT committed (copyrighted). This file is the integrity reference for
+re-pulls and cross-user verification.
