@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# RE work
+# Large captures (>5 MB) — gitignored by convention; commit small ones.
+docs/captures/*.log.big
+spike/.scratch/
