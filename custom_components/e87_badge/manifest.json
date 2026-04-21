@@ -1,7 +1,7 @@
 {
   "domain": "e87_badge",
   "name": "E87 Smart Digital Badge",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "config_flow": true,
   "bluetooth": [
     {"local_name": "E87"},
@@ -12,6 +12,6 @@
   "documentation": "https://github.com/jumpingmushroom/e87_badge",
   "issue_tracker": "https://github.com/jumpingmushroom/e87_badge/issues",
   "iot_class": "local_push",
-  "requirements": ["e87-badge @ git+https://github.com/jumpingmushroom/e87_badge@v0.1.8"],
+  "requirements": ["e87-badge @ git+https://github.com/jumpingmushroom/e87_badge@v0.1.9"],
   "codeowners": ["@jumpingmushroom"]
 }

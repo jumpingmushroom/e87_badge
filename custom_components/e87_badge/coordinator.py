@@ -41,8 +41,19 @@ class E87Coordinator(ActiveBluetoothDataUpdateCoordinator[None]):
         )
         self.last_sent_at: datetime | None = None
         self.last_sent_type: str | None = None
-        self.last_service_info: bluetooth.BluetoothServiceInfoBleak | None = None
         self._lock = asyncio.Lock()
+
+    @property
+    def last_service_info(self) -> bluetooth.BluetoothServiceInfoBleak | None:
+        """Expose the freshest advertisement the base class has seen.
+
+        `ActiveBluetoothDataUpdateCoordinator._async_handle_bluetooth_event`
+        writes `_last_service_info` on every advert, regardless of polling.
+        Reading that directly gives us live RSSI + proxy-source data without
+        piggybacking on `_needs_poll` (which fires only when HA evaluates a
+        poll — and we always say "no poll needed").
+        """
+        return getattr(self, "_last_service_info", None)
 
     @callback
     def _needs_poll(
@@ -50,9 +61,7 @@ class E87Coordinator(ActiveBluetoothDataUpdateCoordinator[None]):
         service_info: bluetooth.BluetoothServiceInfoBleak,
         last_poll: float | None,
     ) -> bool:
-        """Record the freshest advert so the sensor can surface RSSI + source;
-        never actually poll (badge is push-only)."""
-        self.last_service_info = service_info
+        """Never poll — badge is push-only."""
         return False
 
     async def _async_update(
