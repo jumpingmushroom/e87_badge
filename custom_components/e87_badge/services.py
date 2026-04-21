@@ -17,12 +17,25 @@ from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 try:
-    # HA 2025.x+ — correct location
-    from homeassistant.helpers.target import async_extract_referenced_entity_ids
-except ImportError:  # pragma: no cover - older HA cores
-    from homeassistant.helpers.service import (  # noqa: F401
-        async_extract_referenced_entity_ids,
+    # HA 2025.8+ moved these out of helpers.service into helpers.target, and
+    # changed the signature of async_extract_referenced_entity_ids: it now
+    # takes a TargetSelection (built from the call's data) instead of a
+    # ServiceCall. We wrap the difference so call sites can stay uniform.
+    from homeassistant.helpers.target import (
+        TargetSelection,
+        async_extract_referenced_entity_ids as _async_extract_target,
     )
+
+    def _extract_referenced(hass: HomeAssistant, call: ServiceCall):
+        return _async_extract_target(hass, TargetSelection(call.data))
+
+except ImportError:  # pragma: no cover - older HA cores
+    from homeassistant.helpers.service import (
+        async_extract_referenced_entity_ids as _async_extract_service,
+    )
+
+    def _extract_referenced(hass: HomeAssistant, call: ServiceCall):
+        return _async_extract_service(hass, call)
 
 from .const import (
     ATTR_BG,
@@ -174,7 +187,7 @@ async def _coordinators_for_call(
     hass: HomeAssistant, call: ServiceCall
 ) -> list[E87Coordinator]:
     """Resolve the target selector into a list of E87 coordinators."""
-    referenced = async_extract_referenced_entity_ids(hass, call)
+    referenced = _extract_referenced(hass, call)
     entity_ids = referenced.referenced | referenced.indirectly_referenced
     if not entity_ids:
         raise HomeAssistantError(
