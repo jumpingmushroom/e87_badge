@@ -1,16 +1,118 @@
-# E87 Communicator
+# e87_badge
 
-Open-source client for the generic **E-Badge E87** round LCD Bluetooth pin (the one that
-normally pairs with the Zrun app).
+Open-source Python client + Home Assistant integration for the **E-Badge E87 / L8** round-screen Bluetooth pin (the one that normally pairs with the Zrun app).
 
-This repo reverse-engineers the BLE protocol and ships:
+- 🖼️ Static images (JPEG/PNG upload)
+- 📝 Rendered text
+- 🎞️ Multi-image slideshows (MJPG AVI)
+- 🖼️ Animated GIFs
+- 🧧 Danmaku — scrolling text with custom colours
 
-1. `docs/protocol.md` — protocol specification (phase 1)
-2. `e87_badge` — Python library + `e87` CLI (phase 2)
-3. `custom_components/e87_badge` — Home Assistant custom integration (phase 3)
+Built on top of:
 
-See `docs/superpowers/specs/2026-04-20-e87-badge-design.md` for the full design.
+- Reverse-engineered **JieLi RCSP** framing and mutual-auth cipher
+- Upstream [hybridherbst/web-bluetooth-e87](https://github.com/hybridherbst/web-bluetooth-e87) (MIT) for protocol flow + AVI container
+- Home Assistant's `habluetooth` → ESPHome `bluetooth_proxy` path so a single badge is reachable from anywhere in the house
 
-## Status
+See [`docs/protocol.md`](docs/protocol.md) for the full wire-level protocol write-up.
 
-Phase 1 in progress — protocol reverse-engineering. No working client yet.
+---
+
+## Install — Python library + CLI
+
+```bash
+pip install git+https://github.com/jumpingmushroom/e87_badge@v0.1.0
+```
+
+Usage:
+
+```bash
+e87 discover                                 # scan for nearby badges
+e87 image my-photo.png                       # upload a still image
+e87 text "Hello" --size 96 --colour white    # rendered text
+e87 slideshow a.png b.png c.png --ms 600     # multi-image slideshow
+e87 gif pulse.gif                            # animated GIF
+e87 danmaku "Welcome!" --fg red --bg yellow  # scrolling text
+```
+
+Pass `--address AA:BB:CC:DD:EE:FF` to target a specific badge (otherwise discovery picks the first one).
+
+Library API:
+
+```python
+import asyncio
+from e87_badge import E87Client
+
+async def main():
+    async with E87Client("46:8D:00:01:2C:25") as badge:
+        await badge.send_image("welcome.png")
+        await badge.send_text("Hi")
+        await badge.send_slideshow(["a.png", "b.png", "c.png"], frame_ms=500)
+        await badge.send_gif("party.gif")
+        await badge.send_danmaku("breaking news!", fg="red", bg="black")
+
+asyncio.run(main())
+```
+
+`E87Client` accepts either a MAC-address string or a pre-resolved `bleak.BLEDevice`. The `BLEDevice` form is what Home Assistant uses to route through whichever Bluetooth proxy is currently closest.
+
+---
+
+## Install — Home Assistant integration
+
+The custom component lives under `custom_components/e87_badge/` and installs the library automatically via its `manifest.json` requirements.
+
+**HACS (recommended):**
+
+1. HACS → Integrations → ⋮ → Custom repositories
+2. Add `https://github.com/jumpingmushroom/e87_badge` as an **Integration**
+3. Install "E87 Smart Digital Badge", restart Home Assistant
+
+**Manual:**
+
+```bash
+cd /config
+git clone --branch v0.1.0 https://github.com/jumpingmushroom/e87_badge
+ln -s e87_badge/custom_components/e87_badge custom_components/e87_badge
+```
+
+Restart HA. When the badge advertises, it will appear under **Settings → Devices & Services → Discovered** as "E87 Smart Digital Badge". Add it once and you get:
+
+- One sensor entity showing connection status (`last_sent_at`, `last_sent_type`, `rssi`, `proxy_source` attributes)
+- Five services:
+
+| Service | Fields |
+|---|---|
+| `e87_badge.send_image` | `image` (path, URL, or base64) |
+| `e87_badge.send_text` | `text`, optional `font`, `size`, `colour`, `bg` |
+| `e87_badge.send_slideshow` | `images` (list), optional `frame_ms` |
+| `e87_badge.send_gif` | `image` (GIF path/URL/base64), optional `max_fps` |
+| `e87_badge.send_danmaku` | `text`, optional `fg`, `bg`, `font`, `font_size`, `speed`, `fps` |
+
+Example automation:
+
+```yaml
+- alias: Welcome badge on arrival
+  trigger:
+    - platform: state
+      entity_id: person.johnny
+      to: "home"
+  action:
+    - service: e87_badge.send_image
+      target:
+        entity_id: sensor.e87_badge_status
+      data:
+        image: /config/www/badges/welcome.png
+```
+
+---
+
+## Requirements
+
+- Linux or HA OS host with Bluetooth, or an ESPHome `bluetooth_proxy`
+- Python 3.11+ (HA itself requires 3.12+)
+- `bleak`, `bleak-retry-connector`, `pillow` (pulled in automatically)
+
+## License
+
+MIT. See [`LICENSE`](LICENSE). The JieLi auth cipher tables and AVI builder are ported from [web-bluetooth-e87](https://github.com/hybridherbst/web-bluetooth-e87) (© 2026 Felix Herbst, MIT).

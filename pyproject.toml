@@ -9,7 +9,7 @@ description = "Open client + Home Assistant integration for the E-Badge E87 / L8
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Johnny" }]
+authors = [{ name = "jumpingmushroom" }]
 keywords = ["bluetooth", "ble", "e87", "jieli", "home-assistant", "led-badge"]
 classifiers = [
     "License :: OSI Approved :: MIT License",
@@ -36,7 +36,7 @@ dev = [
 e87 = "e87_badge.cli:main"
 
 [project.urls]
-Source = "https://github.com/johnnyjumpingmushroom/E87_communicator"
+Source = "https://github.com/jumpingmushroom/e87_badge"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/e87_badge"]
