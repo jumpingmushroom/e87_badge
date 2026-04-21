@@ -76,36 +76,58 @@ class E87Client:
                 log.debug("RX raw (%d): %s", len(raw), raw.hex())
             self._bus.push(raw)
 
-        try:
-            self._client = await establish_connection(
-                BleakClient,
-                target,
-                name=getattr(target, "name", None) or str(target),
-                max_attempts=3,
+        # Full-cycle retry loop. If the CCCD write for AE02 notify times out
+        # at the ESPHome proxy (a common failure mode after a previous
+        # connection didn't clean up), retrying start_notify on the same
+        # BleakClient does nothing — the proxy's BLE stack is wedged on that
+        # connection. Only a full disconnect/reconnect frees the slot.
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                self._client = await establish_connection(
+                    BleakClient,
+                    target,
+                    name=getattr(target, "name", None) or str(target),
+                    max_attempts=3,
+                )
+            except Exception as exc:
+                raise E87ConnectError(f"could not connect to badge: {exc}") from exc
+
+            log.info(
+                "Connect attempt %d/3: connected, MTU=%s",
+                attempt,
+                getattr(self._client, "mtu_size", "?"),
             )
-        except Exception as exc:
-            raise E87ConnectError(f"could not connect to badge: {exc}") from exc
+            try:
+                await self._subscribe_ae02(_on_notify)
+            except E87ConnectError as exc:
+                last_exc = exc
+                log.warning(
+                    "Attempt %d/3: AE02 subscribe failed (%s); "
+                    "disconnecting and retrying from scratch",
+                    attempt,
+                    exc,
+                )
+                await self._best_effort_disconnect()
+                if attempt < 3:
+                    await asyncio.sleep(3.0)  # let the proxy release the slot
+                continue
 
-        log.info("Connected. MTU=%s", getattr(self._client, "mtu_size", "?"))
-        await self._subscribe_all(_on_notify)
-        await asyncio.sleep(0.1)  # settle notifications before the first auth byte
+            # AE02 OK — subscribe best-effort to the FD* side-channels
+            await self._subscribe_side_channels(_on_notify)
+            await asyncio.sleep(0.1)  # let queued notifications drain
+            await do_auth(self._write_ae01, self._bus)
+            self._authed = True
+            return
 
-        await do_auth(self._write_ae01, self._bus)
-        self._authed = True
+        raise E87ConnectError(
+            f"Could not establish a working session after 3 full reconnect "
+            f"attempts: {last_exc}. Consider restarting the Bluetooth proxy "
+            "or increasing its active_connections budget."
+        )
 
     async def disconnect(self) -> None:
-        if self._client is None:
-            return
-        for uuid in ALL_NOTIFY_UUIDS:
-            try:
-                await self._client.stop_notify(uuid)
-            except Exception:
-                pass
-        try:
-            await self._client.disconnect()
-        except Exception:
-            pass
-        self._client = None
+        await self._best_effort_disconnect()
         self._authed = False
 
     # ── Public send_* methods ──────────────────────────────────────────
@@ -205,40 +227,30 @@ class E87Client:
         except Exception as exc:  # pragma: no cover - stack-dependent
             log.warning("FD02 write failed (%s): %s (continuing)", data.hex(), exc)
 
-    async def _subscribe_all(self, callback) -> None:
-        """Subscribe to notifications on AE02 (mandatory) and the JieLi FD
-        side-channels (best-effort). AE02 is the path the badge uses to send
-        auth responses and upload acks — we cannot run a session without it.
-        The FD* chars only carry JieLi RCSP device-info and bootstrap signals
-        that the upload flow already tolerates missing.
+    async def _subscribe_ae02(self, callback) -> None:
+        """Subscribe to AE02 exactly once. Raise E87ConnectError on failure.
+
+        Retrying start_notify on the same BleakClient doesn't help when the
+        proxy's BLE stack is wedged — only a full reconnect does. The outer
+        retry loop in connect() handles that.
         """
         assert self._client is not None
-
-        # AE02: required. Retry on failure — some BLE proxies can take a few
-        # seconds to clear a prior subscription or complete the CCCD write.
-        last_exc: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                await self._client.start_notify(AE_NOTIFY_UUID, callback)
-                log.info("Subscribed to notifications on %s", AE_NOTIFY_UUID)
-                last_exc = None
-                break
-            except Exception as exc:  # pragma: no cover - stack-dependent
-                last_exc = exc
-                log.warning(
-                    "start_notify on AE02 failed (attempt %d/3): %s", attempt, exc
-                )
-                await asyncio.sleep(1.0)
-        if last_exc is not None:
+        try:
+            await self._client.start_notify(AE_NOTIFY_UUID, callback)
+            log.info("Subscribed to notifications on %s", AE_NOTIFY_UUID)
+        except Exception as exc:  # pragma: no cover - stack-dependent
             raise E87ConnectError(
-                "Could not subscribe to the badge's notification channel "
-                f"({AE_NOTIFY_UUID}) after 3 attempts: {last_exc}. This is "
-                "usually a sign that the Bluetooth proxy is saturated or the "
-                "previous connection was not cleaned up — try restarting the "
-                "proxy, or move the badge closer to a different proxy."
-            )
+                f"Could not subscribe to the badge's notification channel "
+                f"({AE_NOTIFY_UUID}): {exc}"
+            ) from exc
 
-        # FD01 / FD03 / FD05: best-effort.
+    async def _subscribe_side_channels(self, callback) -> None:
+        """Subscribe to JieLi FD01 / FD03 / FD05 notifications (best-effort).
+
+        These only carry JieLi RCSP device-info and bootstrap signals that
+        the upload flow already tolerates missing.
+        """
+        assert self._client is not None
         for uuid in ALL_NOTIFY_UUIDS:
             if uuid == AE_NOTIFY_UUID:
                 continue
@@ -247,3 +259,18 @@ class E87Client:
                 log.info("Subscribed to notifications on %s", uuid)
             except Exception as exc:  # pragma: no cover - stack-dependent
                 log.warning("start_notify failed on %s: %s (continuing)", uuid, exc)
+
+    async def _best_effort_disconnect(self) -> None:
+        """Tear down the current client without raising."""
+        if self._client is None:
+            return
+        for uuid in ALL_NOTIFY_UUIDS:
+            try:
+                await self._client.stop_notify(uuid)
+            except Exception:
+                pass
+        try:
+            await self._client.disconnect()
+        except Exception:
+            pass
+        self._client = None
