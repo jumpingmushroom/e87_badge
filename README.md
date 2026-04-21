@@ -105,6 +105,26 @@ Example automation:
         image: /config/www/badges/welcome.png
 ```
 
+### Home Assistant integration notes
+
+**Recommend `connection_slots: 5` on the ESPHome `bluetooth_proxy` nearest to the badge.** The badge's upload protocol uses a single long-lived GATT connection plus several short command round-trips per send; on a proxy configured with the default `connection_slots: 3`, a previous failed session that hasn't fully released its slot can block the next send with `Could not subscribe to the badge's notification channel`. Up to 5 slots is safe on Wi-Fi proxies (Ethernet proxies can go higher).
+
+```yaml
+bluetooth_proxy:
+  active: true
+  connection_slots: 5
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true   # needed for the "E87" local_name matcher
+```
+
+If sends still fail from a specific proxy, **reboot it once** — this clears any stale internal state. Long-term, distribute proxies so each is within ~3 m of the badge in typical use.
+
+**Uploads take ~5–15 seconds** for a small still image, 30–60 seconds for a slideshow/GIF/danmaku. Service calls don't time out at HA's end, but keep this in mind when writing automations — don't fire consecutive sends in rapid succession.
+
+**If a send fails mid-transfer**, v0.1.12+ sends a `CMD_STOP` to the badge so the next attempt starts clean. Earlier versions required waiting a few minutes for the badge to time itself out. If you're on an older version and hit this, the workaround is to power-cycle the badge or wait ~3 minutes.
+
 ---
 
 ## Requirements

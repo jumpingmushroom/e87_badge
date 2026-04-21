@@ -232,6 +232,7 @@ class UploadSession:
                 label="initial window ack",
             )
         except TimeoutError as exc:
+            await self._abort_session("no initial window ack")
             raise E87TransferAborted(
                 "device did not send the initial window ack within 30s "
                 "(try moving the badge closer to the proxy, or check that "
@@ -270,6 +271,9 @@ class UploadSession:
                     label="window ack, FILE_COMPLETE or session close",
                 )
             except TimeoutError as exc:
+                await self._abort_session(
+                    f"no window ack at {state.total_bytes_sent}/{len(data)} bytes"
+                )
                 raise E87TransferAborted(
                     "no window ack or completion within 30s "
                     f"({state.total_bytes_sent}/{len(data)} bytes sent so far)"
@@ -346,6 +350,31 @@ class UploadSession:
             "Window done: %d chunks, %d bytes (total %d/%d)",
             chunks_in_window, bytes_in_window, state.total_bytes_sent, len(data),
         )
+
+    async def _abort_session(self, reason: str) -> None:
+        """Best-effort tell the badge to forget an in-flight transfer.
+
+        Sent from both the initial-window and mid-transfer timeout paths
+        before we raise `E87TransferAborted` and disconnect. Without this,
+        the badge's file-transfer state machine stays in "expecting more
+        chunks" mode for several minutes, and the *next* upload attempt
+        either silently resumes from the previous stop point or fails at
+        the initial window ack because the badge refuses to start a new
+        transfer while the last one is still open.
+
+        Swallows any failure — the connection may already be dead; we're
+        about to disconnect regardless. A warning log is sufficient.
+        """
+        try:
+            await self._send_fe(
+                FLAG_COMMAND, 0x1C, bytes((self._seq & 0xFF, 0x00))
+            )
+            self._seq = (self._seq + 1) & 0xFF
+            log.info("Sent CMD_STOP (0x1C) after abort: %s", reason)
+        except Exception as exc:
+            log.warning(
+                "Failed to send abort 0x1C (%s); continuing: %s", reason, exc
+            )
 
     async def _finalize(self, close_frame: E87Frame) -> None:
         body_hex = close_frame.body.hex()
