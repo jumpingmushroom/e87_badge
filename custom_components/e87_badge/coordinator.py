@@ -41,6 +41,7 @@ class E87Coordinator(ActiveBluetoothDataUpdateCoordinator[None]):
         )
         self.last_sent_at: datetime | None = None
         self.last_sent_type: str | None = None
+        self.last_service_info: bluetooth.BluetoothServiceInfoBleak | None = None
         self._lock = asyncio.Lock()
 
     @callback
@@ -49,7 +50,9 @@ class E87Coordinator(ActiveBluetoothDataUpdateCoordinator[None]):
         service_info: bluetooth.BluetoothServiceInfoBleak,
         last_poll: float | None,
     ) -> bool:
-        """Never poll — badge is push-only."""
+        """Record the freshest advert so the sensor can surface RSSI + source;
+        never actually poll (badge is push-only)."""
+        self.last_service_info = service_info
         return False
 
     async def _async_update(
