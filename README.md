@@ -107,16 +107,34 @@ Example automation:
 
 ### Home Assistant integration notes
 
-**Recommend `connection_slots: 5` on the ESPHome `bluetooth_proxy` nearest to the badge.** The badge's upload protocol uses a single long-lived GATT connection plus several short command round-trips per send; on a proxy configured with the default `connection_slots: 3`, a previous failed session that hasn't fully released its slot can block the next send with `Could not subscribe to the badge's notification channel`. Up to 5 slots is safe on Wi-Fi proxies (Ethernet proxies can go higher).
+**Bump `connection_slots` on the ESPHome `bluetooth_proxy` nearest to the badge.** The badge's upload protocol uses a single long-lived GATT connection plus several short command round-trips per send; on a proxy at the default `connection_slots: 3`, a previous failed session that hasn't fully released its slot can block the next send with `Could not subscribe to the badge's notification channel`.
+
+**Safe default — Bluedroid (stock ESPHome):**
 
 ```yaml
 bluetooth_proxy:
   active: true
-  connection_slots: 5
+  connection_slots: 4
 
 esp32_ble_tracker:
   scan_parameters:
     active: true   # needed for the "E87" local_name matcher
+```
+
+`4` works on default Bluedroid builds. Going to `5+` on Bluedroid typically fails at boot with `Failed due to no resources. Try to reduce number of BLE clients in config.` If you need more, switch to NimBLE:
+
+```yaml
+esp32:
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_BT_NIMBLE_ENABLED: "y"
+      CONFIG_BT_BLE_ENABLED: "y"
+      CONFIG_BT_NIMBLE_MAX_CONNECTIONS: "9"
+
+bluetooth_proxy:
+  active: true
+  connection_slots: 5
 ```
 
 If sends still fail from a specific proxy, **reboot it once** — this clears any stale internal state. Long-term, distribute proxies so each is within ~3 m of the badge in typical use.
