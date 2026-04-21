@@ -8,16 +8,25 @@
       },
       "user": {
         "title": "E87 Smart Digital Badge",
-        "description": "Pick a discovered E87 badge to configure.",
+        "description": "Pick a discovered E87 badge to configure, or choose 'Enter MAC address manually' to type it in (the badge shows its MAC on screen when unpaired).",
         "data": {
           "address": "Device"
+        }
+      },
+      "manual": {
+        "title": "Enter badge MAC address",
+        "description": "Wake the badge and note the MAC address shown on its screen (format like AA:BB:CC:DD:EE:FF). Enter it below.",
+        "data": {
+          "address": "MAC address"
         }
       }
     },
     "abort": {
       "already_configured": "This badge is already configured.",
-      "no_devices_found": "No unconfigured E87 badges were discovered.",
       "not_supported": "This Bluetooth device is not an E87 badge."
+    },
+    "error": {
+      "invalid_mac": "That doesn't look like a valid MAC address. Use the format AA:BB:CC:DD:EE:FF."
     }
   },
   "entity": {
