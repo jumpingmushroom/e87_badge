@@ -220,16 +220,22 @@ class UploadSession:
 
         state = _TransferState(data_seq=self._seq, total_chunks=total_chunks)
 
+        # The initial window ack is the most latency-sensitive moment — the
+        # badge is flushing its filesystem and allocating storage while we
+        # wait. Through an ESPHome bluetooth_proxy each round-trip adds a
+        # few hundred ms, so the direct-BlueZ 10s budget is too tight.
         try:
             current_ack = await wait_for_frame(
                 self._bus,
                 lambda f: f.flag == FLAG_DATA and f.cmd == 0x1D,
-                timeout=10.0,
+                timeout=30.0,
                 label="initial window ack",
             )
         except TimeoutError as exc:
             raise E87TransferAborted(
-                "device did not send the initial window ack within 10s"
+                "device did not send the initial window ack within 30s "
+                "(try moving the badge closer to the proxy, or check that "
+                "no other client is holding the connection)"
             ) from exc
 
         while True:
@@ -251,17 +257,23 @@ class UploadSession:
                     log.warning("Non-zero window ack status: 0x%02x", ack_status)
                 await self._send_window(data, chunk_size, next_offset, win_size, state)
 
+            # Mid-transfer: same reasoning as the initial-window timeout.
+            # Large uploads (slideshow/GIF/danmaku — 100s of chunks across
+            # dozens of windows) magnify any per-round-trip latency.
             try:
                 frame = await wait_for_frame(
                     self._bus,
                     lambda f: (f.flag == FLAG_DATA and f.cmd == 0x1D)
                     or f.cmd == 0x20
                     or f.cmd == 0x1C,
-                    timeout=15.0,
+                    timeout=30.0,
                     label="window ack, FILE_COMPLETE or session close",
                 )
             except TimeoutError as exc:
-                raise E87TransferAborted("no window ack / completion within 15s") from exc
+                raise E87TransferAborted(
+                    "no window ack or completion within 30s "
+                    f"({state.total_bytes_sent}/{len(data)} bytes sent so far)"
+                ) from exc
 
             if frame.cmd == 0x20 and frame.flag == FLAG_COMMAND:
                 device_seq_20 = frame.body[0] if frame.body else (state.data_seq & 0xFF)
@@ -274,7 +286,7 @@ class UploadSession:
                     self._file_complete_handled = True
                     log.info("Sent path response")
                 close_frame = await wait_for_frame(
-                    self._bus, lambda f: f.cmd == 0x1C, timeout=15.0,
+                    self._bus, lambda f: f.cmd == 0x1C, timeout=30.0,
                     label="session close (cmd 0x1c)",
                 )
                 await self._finalize(close_frame)
