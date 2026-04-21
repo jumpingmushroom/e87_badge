@@ -4,11 +4,43 @@ build-backend = "hatchling.build"
 
 [project]
 name = "e87-badge"
-version = "0.0.0"
-description = "Open client for the E-Badge E87 BLE pin"
+version = "0.1.0"
+description = "Open client + Home Assistant integration for the E-Badge E87 / L8 round LCD BLE pin"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+authors = [{ name = "Johnny" }]
+keywords = ["bluetooth", "ble", "e87", "jieli", "home-assistant", "led-badge"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Home Automation",
+]
+dependencies = [
+    "bleak>=0.22",
+    "bleak-retry-connector>=3.5",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+e87 = "e87_badge.cli:main"
+
+[project.urls]
+Source = "https://github.com/johnnyjumpingmushroom/E87_communicator"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/e87_badge"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,4 +1,4 @@
-"""Tests for spike/jieli_auth.py — JieLi RCSP auth cipher port.
+"""Tests for e87_badge.jieli_cipher — JieLi RCSP auth cipher port.
 
 Test vector from protocol-understanding/jl_auth_v3.py and verify_crypto.py:
     Device challenge (wire, 17 bytes): 00 b6 e0 80 ec af f3 22 91 6d 88 fa d5 aa 34 c2 ac
@@ -10,7 +10,7 @@ cipher input/output.  get_encrypted_auth_data() takes the 16-byte challenge
 """
 
 import pytest
-from spike.jieli_auth import get_encrypted_auth_data, get_random_auth_data, encrypt_block
+from e87_badge.jieli_cipher import get_encrypted_auth_data, get_random_auth_data, encrypt_block
 
 
 # ── Test 1: Known-answer / test vector ───────────────────────────────────────
