@@ -1,0 +1,82 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "bluetooth_confirm": {
+        "title": "E87 Smart Digital Badge",
+        "description": "Set up {name}?"
+      },
+      "user": {
+        "title": "E87 Smart Digital Badge",
+        "description": "Pick a discovered E87 badge to configure.",
+        "data": {
+          "address": "Device"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This badge is already configured.",
+      "no_devices_found": "No unconfigured E87 badges were discovered.",
+      "not_supported": "This Bluetooth device is not an E87 badge."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "E87 Badge Status"
+      }
+    }
+  },
+  "services": {
+    "send_image": {
+      "name": "Send image",
+      "description": "Render and push a still image to the badge.",
+      "fields": {
+        "image": {
+          "name": "Image",
+          "description": "Path, URL, data URI, or base64 image payload."
+        }
+      }
+    },
+    "send_text": {
+      "name": "Send text",
+      "description": "Render a text message as an image on the badge.",
+      "fields": {
+        "text": {"name": "Text", "description": "The text to render."},
+        "font": {"name": "Font", "description": "Font name or path (optional)."},
+        "size": {"name": "Font size", "description": "Point size of the text."},
+        "colour": {"name": "Text colour", "description": "CSS/PIL colour name or hex."},
+        "bg": {"name": "Background colour", "description": "CSS/PIL colour name or hex."}
+      }
+    },
+    "send_slideshow": {
+      "name": "Send slideshow",
+      "description": "Push a sequence of images that rotate on the badge.",
+      "fields": {
+        "images": {"name": "Images", "description": "List of image references."},
+        "frame_ms": {"name": "Frame duration (ms)", "description": "Milliseconds each frame is shown."}
+      }
+    },
+    "send_gif": {
+      "name": "Send GIF",
+      "description": "Push an animated GIF to the badge.",
+      "fields": {
+        "image": {"name": "GIF", "description": "GIF source (path, URL, data URI, or base64)."},
+        "max_fps": {"name": "Maximum FPS", "description": "Cap on the playback frame rate."}
+      }
+    },
+    "send_danmaku": {
+      "name": "Send danmaku",
+      "description": "Render a scrolling danmaku-style text banner.",
+      "fields": {
+        "text": {"name": "Text", "description": "The text to scroll."},
+        "fg": {"name": "Foreground colour", "description": "CSS/PIL colour name or hex."},
+        "bg": {"name": "Background colour", "description": "CSS/PIL colour name or hex."},
+        "font": {"name": "Font", "description": "Font name or path (optional)."},
+        "font_size": {"name": "Font size", "description": "Point size of the text."},
+        "speed": {"name": "Scroll speed", "description": "Pixels per frame."},
+        "fps": {"name": "Frames per second", "description": "Animation frame rate."}
+      }
+    }
+  }
+}

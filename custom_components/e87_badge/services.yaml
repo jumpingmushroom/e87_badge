@@ -1,0 +1,176 @@
+send_image:
+  name: Send image
+  description: Render and push a still image to the badge.
+  target:
+    entity:
+      integration: e87_badge
+  fields:
+    image:
+      name: Image
+      description: >-
+        Path under allowlist_external_dirs, http(s):// URL, data: URI,
+        or raw base64-encoded image bytes.
+      required: true
+      example: "/config/www/badge/hello.png"
+      selector:
+        text:
+
+send_text:
+  name: Send text
+  description: Render text on the badge as a static image.
+  target:
+    entity:
+      integration: e87_badge
+  fields:
+    text:
+      name: Text
+      description: The text to render.
+      required: true
+      example: "Hello"
+      selector:
+        text:
+    font:
+      name: Font
+      description: Optional TrueType/OpenType font name or path.
+      required: false
+      example: "DejaVuSans-Bold"
+      selector:
+        text:
+    size:
+      name: Font size
+      description: Point size of the rendered text.
+      required: false
+      default: 72
+      selector:
+        number:
+          min: 8
+          max: 512
+          mode: box
+    colour:
+      name: Text colour
+      description: CSS/PIL colour name or hex.
+      required: false
+      default: "white"
+      example: "#ff0055"
+      selector:
+        text:
+    bg:
+      name: Background colour
+      description: CSS/PIL colour name or hex.
+      required: false
+      default: "black"
+      example: "#000000"
+      selector:
+        text:
+
+send_slideshow:
+  name: Send slideshow
+  description: Send a sequence of images shown in rotation on the badge.
+  target:
+    entity:
+      integration: e87_badge
+  fields:
+    images:
+      name: Images
+      description: >-
+        List of image references (paths, URLs, data URIs, or base64).
+      required: true
+      example: '["/config/www/a.png", "/config/www/b.png"]'
+      selector:
+        object:
+    frame_ms:
+      name: Frame duration (ms)
+      description: Milliseconds each frame is shown.
+      required: false
+      default: 500
+      selector:
+        number:
+          min: 50
+          max: 5000
+          unit_of_measurement: ms
+          mode: box
+
+send_gif:
+  name: Send GIF
+  description: Send an animated GIF to the badge.
+  target:
+    entity:
+      integration: e87_badge
+  fields:
+    image:
+      name: GIF
+      description: Path, URL, data URI, or base64 of an animated GIF.
+      required: true
+      example: "/config/www/wave.gif"
+      selector:
+        text:
+    max_fps:
+      name: Maximum FPS
+      description: Cap the playback frame rate.
+      required: false
+      default: 24
+      selector:
+        number:
+          min: 1
+          max: 30
+          mode: box
+
+send_danmaku:
+  name: Send danmaku
+  description: Render a scrolling danmaku-style text banner on the badge.
+  target:
+    entity:
+      integration: e87_badge
+  fields:
+    text:
+      name: Text
+      description: The text to scroll.
+      required: true
+      example: "Hello world"
+      selector:
+        text:
+    fg:
+      name: Foreground colour
+      required: false
+      default: "white"
+      selector:
+        text:
+    bg:
+      name: Background colour
+      required: false
+      default: "black"
+      selector:
+        text:
+    font:
+      name: Font
+      description: Optional font name or path.
+      required: false
+      selector:
+        text:
+    font_size:
+      name: Font size
+      required: false
+      default: 64
+      selector:
+        number:
+          min: 8
+          max: 512
+          mode: box
+    speed:
+      name: Scroll speed (px/frame)
+      required: false
+      default: 4
+      selector:
+        number:
+          min: 1
+          max: 20
+          mode: box
+    fps:
+      name: Frames per second
+      required: false
+      default: 20
+      selector:
+        number:
+          min: 5
+          max: 30
+          mode: box
