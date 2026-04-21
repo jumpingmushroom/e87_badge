@@ -7,7 +7,6 @@ import logging
 from homeassistant.components import bluetooth
 from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import DOMAIN
 from .coordinator import E87ConfigEntry, E87Coordinator
@@ -19,16 +18,24 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: E87ConfigEntry) -> bool:
-    """Set up an E87 badge from a config entry."""
+    """Set up an E87 badge from a config entry.
+
+    We intentionally do NOT gate setup on the badge being currently visible:
+    this device advertises infrequently and competes with other BLE clients
+    for proxy attention, so the entry should load whether or not a scanner
+    has heard from it in the last few seconds. The sensor exposes
+    availability via the coordinator, and actual send_* calls re-check
+    reachability at invocation time and raise HomeAssistantError if no
+    proxy can currently route to the badge.
+    """
     address: str = entry.data[CONF_ADDRESS]
 
-    ble_device = bluetooth.async_ble_device_from_address(
-        hass, address, connectable=True
-    )
-    if ble_device is None:
-        raise ConfigEntryNotReady(
-            f"E87 badge at {address} is not currently visible to any "
-            "Bluetooth adapter or proxy"
+    if bluetooth.async_ble_device_from_address(hass, address, connectable=True) is None:
+        _LOGGER.info(
+            "E87 badge at %s is not currently visible to any Bluetooth "
+            "adapter or proxy; setting up anyway — the sensor will become "
+            "available once adverts are received",
+            address,
         )
 
     coordinator = E87Coordinator(hass, address)
