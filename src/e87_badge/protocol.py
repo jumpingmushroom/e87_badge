@@ -239,6 +239,7 @@ class UploadSession:
                 "no other client is holding the connection)"
             ) from exc
 
+        file_fully_sent = False
         while True:
             if current_ack is not None and current_ack.cmd == 0x1D and len(current_ack.body) >= 8:
                 ack_seq = current_ack.body[0]
@@ -256,7 +257,34 @@ class UploadSession:
                 )
                 if ack_status != 0x00:
                     log.warning("Non-zero window ack status: 0x%02x", ack_status)
-                await self._send_window(data, chunk_size, next_offset, win_size, state)
+
+                # Only send another window if the badge is asking for data
+                # that actually exists and we haven't already delivered the
+                # whole file. Without this guard, a badge in a weird state
+                # (e.g. preserved partial-transfer context from a previous
+                # session) can keep issuing 0x1D acks with offsets we've
+                # already covered, and the sender dumbly re-transmits the
+                # same bytes until the 30s window timeout — producing the
+                # confusing 'X/Y bytes sent' where X > Y.
+                if next_offset >= len(data):
+                    log.info(
+                        "Window ack requests offset %d which is at/past EOF "
+                        "(%d) — refusing to resend; waiting for cmd 0x20/0x1c",
+                        next_offset, len(data),
+                    )
+                    file_fully_sent = True
+                elif file_fully_sent and next_offset < len(data):
+                    log.warning(
+                        "Badge re-requested offset %d after we already sent "
+                        "the full file; ignoring to avoid infinite loop",
+                        next_offset,
+                    )
+                else:
+                    await self._send_window(
+                        data, chunk_size, next_offset, win_size, state,
+                    )
+                    if state.total_bytes_sent >= len(data):
+                        file_fully_sent = True
 
             # Mid-transfer: same reasoning as the initial-window timeout.
             # Large uploads (slideshow/GIF/danmaku — 100s of chunks across

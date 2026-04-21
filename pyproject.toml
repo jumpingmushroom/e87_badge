@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "e87-badge"
-version = "0.1.12"
+version = "0.1.13"
 description = "Open client + Home Assistant integration for the E-Badge E87 / L8 round LCD BLE pin"
 readme = "README.md"
 requires-python = ">=3.11"
