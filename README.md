@@ -121,21 +121,9 @@ esp32_ble_tracker:
     active: true   # needed for the "E87" local_name matcher
 ```
 
-`4` works on default Bluedroid builds. Going to `5+` on Bluedroid typically fails at boot with `Failed due to no resources. Try to reduce number of BLE clients in config.` If you need more, switch to NimBLE:
+`4` works on default Bluedroid builds. Going to `5+` fails at boot with `Failed due to no resources. Try to reduce number of BLE clients in config.`
 
-```yaml
-esp32:
-  framework:
-    type: esp-idf
-    sdkconfig_options:
-      CONFIG_BT_NIMBLE_ENABLED: "y"
-      CONFIG_BT_BLE_ENABLED: "y"
-      CONFIG_BT_NIMBLE_MAX_CONNECTIONS: "9"
-
-bluetooth_proxy:
-  active: true
-  connection_slots: 5
-```
+**Do not try to switch the proxy to NimBLE to raise the cap** — ESPHome's `esp32_ble_tracker` and `bluetooth_proxy` components depend on Bluedroid headers (`esp_bt_defs.h` etc.) and don't compile under NimBLE. Stick with `connection_slots: 4` on Bluedroid; in practice that's enough once you avoid leaking slots on every failed attempt (which v0.1.11+ handles).
 
 If sends still fail from a specific proxy, **reboot it once** — this clears any stale internal state. Long-term, distribute proxies so each is within ~3 m of the badge in typical use.
 
