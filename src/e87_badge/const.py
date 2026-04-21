@@ -9,7 +9,19 @@ from __future__ import annotations
 # ── Advertising ────────────────────────────────────────────────────────────
 
 LOCAL_NAME = "E87"
-"""The badge's GAP local name in the scan response — used for HA auto-discovery."""
+"""The badge's GAP local name in the scan response — used for HA auto-discovery.
+Note: this appears only in the scan response, not the primary advertisement,
+so passive-only scanners (typical ESPHome bluetooth_proxy default) won't see
+it. Passive scanners must match on service UUID or manufacturer ID instead."""
+
+# Primary-advert identifiers (visible to passive scanners).
+ADVERT_SERVICE_UUID_16 = "0000fd00-0000-1000-8000-00805f9b34fb"
+"""16-bit service UUID 0xFD00 broadcast in the primary advertisement."""
+
+ADVERT_MANUFACTURER_ID = 28083
+"""Manufacturer-data company ID (0x6DB3) used by the JieLi-based badge in
+its primary advertisement. Not a registered Bluetooth SIG ID; treat as an
+opaque fingerprint that consistently identifies the E87 family."""
 
 
 # ── Primary image-upload service (AE00) ────────────────────────────────────

@@ -14,16 +14,30 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 
 from e87_badge import AE_SERVICE_UUID, LOCAL_NAME
+from e87_badge.const import ADVERT_MANUFACTURER_ID, ADVERT_SERVICE_UUID_16
 
 from .const import DOMAIN
 
 
 def _is_e87(discovery_info: BluetoothServiceInfoBleak) -> bool:
-    """Return True if this advertisement looks like an E87 badge."""
+    """Return True if this advertisement looks like an E87 badge.
+
+    Matches on any of:
+    - `local_name == "E87"` (scan response, needs active scan)
+    - Advertised 16-bit service UUID 0xFD00 (primary advert, passive-safe)
+    - Advertised primary service UUID 0xAE00 (some firmware variants)
+    - Manufacturer data with company ID 28083 (passive-safe fingerprint)
+    """
     if discovery_info.name == LOCAL_NAME:
         return True
-    service_uuids = [uuid.lower() for uuid in (discovery_info.service_uuids or ())]
-    return AE_SERVICE_UUID.lower() in service_uuids
+    service_uuids = {u.lower() for u in (discovery_info.service_uuids or ())}
+    if ADVERT_SERVICE_UUID_16.lower() in service_uuids:
+        return True
+    if AE_SERVICE_UUID.lower() in service_uuids:
+        return True
+    if discovery_info.manufacturer_data and ADVERT_MANUFACTURER_ID in discovery_info.manufacturer_data:
+        return True
+    return False
 
 
 def _short_mac(address: str) -> str:
