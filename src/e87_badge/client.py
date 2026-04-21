@@ -206,8 +206,42 @@ class E87Client:
             log.warning("FD02 write failed (%s): %s (continuing)", data.hex(), exc)
 
     async def _subscribe_all(self, callback) -> None:
+        """Subscribe to notifications on AE02 (mandatory) and the JieLi FD
+        side-channels (best-effort). AE02 is the path the badge uses to send
+        auth responses and upload acks — we cannot run a session without it.
+        The FD* chars only carry JieLi RCSP device-info and bootstrap signals
+        that the upload flow already tolerates missing.
+        """
         assert self._client is not None
+
+        # AE02: required. Retry on failure — some BLE proxies can take a few
+        # seconds to clear a prior subscription or complete the CCCD write.
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                await self._client.start_notify(AE_NOTIFY_UUID, callback)
+                log.info("Subscribed to notifications on %s", AE_NOTIFY_UUID)
+                last_exc = None
+                break
+            except Exception as exc:  # pragma: no cover - stack-dependent
+                last_exc = exc
+                log.warning(
+                    "start_notify on AE02 failed (attempt %d/3): %s", attempt, exc
+                )
+                await asyncio.sleep(1.0)
+        if last_exc is not None:
+            raise E87ConnectError(
+                "Could not subscribe to the badge's notification channel "
+                f"({AE_NOTIFY_UUID}) after 3 attempts: {last_exc}. This is "
+                "usually a sign that the Bluetooth proxy is saturated or the "
+                "previous connection was not cleaned up — try restarting the "
+                "proxy, or move the badge closer to a different proxy."
+            )
+
+        # FD01 / FD03 / FD05: best-effort.
         for uuid in ALL_NOTIFY_UUIDS:
+            if uuid == AE_NOTIFY_UUID:
+                continue
             try:
                 await self._client.start_notify(uuid, callback)
                 log.info("Subscribed to notifications on %s", uuid)

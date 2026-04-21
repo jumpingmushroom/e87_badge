@@ -15,7 +15,14 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.service import async_extract_referenced_entity_ids
+
+try:
+    # HA 2025.x+ — correct location
+    from homeassistant.helpers.target import async_extract_referenced_entity_ids
+except ImportError:  # pragma: no cover - older HA cores
+    from homeassistant.helpers.service import (  # noqa: F401
+        async_extract_referenced_entity_ids,
+    )
 
 from .const import (
     ATTR_BG,
