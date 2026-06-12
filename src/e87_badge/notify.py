@@ -24,6 +24,11 @@ class NotifyBus:
             del self.queue[: len(self.queue) - 300]
         self.event.set()
 
+    def clear(self) -> None:
+        """Drop everything queued. Stale frames from a previous auth or
+        upload session must never satisfy a later session's waiters."""
+        self.queue.clear()
+
     def consume(self, predicate: Callable[[bytes], bool]) -> bytes | None:
         for i, raw in enumerate(self.queue):
             if predicate(raw):

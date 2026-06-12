@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import re
 
-from e87_badge.protocol import _build_file_path_response, _random_temp_name
+from e87_badge.notify import NotifyBus
+from e87_badge.protocol import (
+    UploadSession,
+    _TransferState,
+    _build_file_path_response,
+    _random_temp_name,
+)
 
 
 def test_temp_name_has_extension_jpg():
@@ -52,3 +58,60 @@ def test_path_response_format_avi():
 def test_path_response_device_seq_wraps():
     body = _build_file_path_response(device_seq=0x1FF, extension="jpg")
     assert body[1] == 0xFF
+
+
+# ── Window-send offset tracking ───────────────────────────────────────────
+
+
+def _make_session() -> UploadSession:
+    async def write_ae01(data: bytes) -> None:
+        pass
+
+    async def write_fd02(data: bytes) -> None:
+        pass
+
+    return UploadSession(write_ae01, write_fd02, NotifyBus())
+
+
+async def test_send_window_tracks_delivered_offset():
+    session = _make_session()
+    data = bytes(1000)
+    state = _TransferState(data_seq=0, total_chunks=10)
+    await session._send_window(data, 100, 0, 300, state)
+    assert state.max_offset_delivered == 300
+    assert state.total_bytes_sent == 300
+
+
+async def test_retransmit_does_not_fake_eof():
+    """A re-sent window inflates total_bytes_sent past len(data), but
+    max_offset_delivered must only reflect what was actually covered —
+    otherwise phase 9 marks the file fully sent while a gap remains and
+    refuses the badge's legitimate re-requests."""
+    session = _make_session()
+    data = bytes(600)
+    state = _TransferState(data_seq=0, total_chunks=6)
+    await session._send_window(data, 100, 0, 300, state)
+    await session._send_window(data, 100, 0, 300, state)  # badge re-request
+    assert state.total_bytes_sent == 600  # overcounts — why it can't gate EOF
+    assert state.max_offset_delivered == 300  # file is NOT fully sent
+    await session._send_window(data, 100, 300, 300, state)
+    assert state.max_offset_delivered == 600
+
+
+async def test_send_window_clamps_at_eof():
+    session = _make_session()
+    data = bytes(250)
+    state = _TransferState(data_seq=0, total_chunks=3)
+    await session._send_window(data, 100, 0, 300, state)
+    assert state.max_offset_delivered == 250
+    assert state.total_bytes_sent == 250
+
+
+# ── NotifyBus session hygiene ─────────────────────────────────────────────
+
+
+def test_notify_bus_clear_drops_stale_frames():
+    bus = NotifyBus()
+    bus.push(b"\xfe\xdc\xba stale")
+    bus.clear()
+    assert bus.consume(lambda r: True) is None

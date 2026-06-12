@@ -54,6 +54,9 @@ class UploadSession:
         log.info("Upload: payload is %d bytes, extension=.%s", len(data), extension)
         self._seq = 0x00
         self._file_complete_handled = False
+        # A previous upload on this connection may have left late window
+        # acks / close frames queued; they'd be consumed as this session's.
+        self._bus.clear()
 
         await self._phase1_reset_auth()
         await self._phase2_fd02_control()
@@ -283,7 +286,13 @@ class UploadSession:
                     await self._send_window(
                         data, chunk_size, next_offset, win_size, state,
                     )
-                    if state.total_bytes_sent >= len(data):
+                    # Judge completion by the highest offset actually
+                    # delivered, never by total_bytes_sent — that counter
+                    # also counts retransmitted windows, so it can pass
+                    # len(data) while a gap still exists, and the guard
+                    # above would then refuse the badge's legitimate
+                    # re-requests.
+                    if state.max_offset_delivered >= len(data):
                         file_fully_sent = True
 
             # Mid-transfer: same reasoning as the initial-window timeout.
@@ -374,6 +383,9 @@ class UploadSession:
             slot = (slot + 1) & 0x07
             bytes_in_window += chunk_len
 
+        state.max_offset_delivered = max(
+            state.max_offset_delivered, offset + bytes_in_window
+        )
         log.info(
             "Window done: %d chunks, %d bytes (total %d/%d)",
             chunks_in_window, bytes_in_window, state.total_bytes_sent, len(data),
@@ -427,6 +439,7 @@ class _TransferState:
         self.total_chunks = total_chunks
         self.sent_chunks = 0
         self.total_bytes_sent = 0
+        self.max_offset_delivered = 0
 
 
 def _random_temp_name(extension: str) -> str:

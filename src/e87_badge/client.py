@@ -25,7 +25,7 @@ from .const import (
     FD_WRITE_UUID,
 )
 from .discovery import find_one
-from .errors import E87ConnectError
+from .errors import E87AuthError, E87ConnectError
 from .frame import parse_fe_frame
 from .notify import NotifyBus
 from .protocol import UploadSession
@@ -116,7 +116,26 @@ class E87Client:
             # AE02 OK — subscribe best-effort to the FD* side-channels
             await self._subscribe_side_channels(_on_notify)
             await asyncio.sleep(0.1)  # let queued notifications drain
-            await do_auth(self._write_ae01, self._bus)
+            # Frames queued by a previous attempt or session must not
+            # satisfy this handshake's waiters.
+            self._bus.clear()
+            try:
+                await do_auth(self._write_ae01, self._bus)
+            except E87AuthError as exc:
+                # Without the disconnect here the failed BleakClient keeps
+                # holding a proxy connection slot — __aexit__ never runs
+                # when __aenter__ raises.
+                last_exc = exc
+                log.warning(
+                    "Attempt %d/3: auth handshake failed (%s); "
+                    "disconnecting and retrying from scratch",
+                    attempt,
+                    exc,
+                )
+                await self._best_effort_disconnect()
+                if attempt < 3:
+                    await asyncio.sleep(3.0)
+                continue
             self._authed = True
             return
 
