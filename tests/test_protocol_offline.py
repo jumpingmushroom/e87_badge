@@ -10,8 +10,14 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
+from e87_badge.const import FLAG_COMMAND, FLAG_DATA
+from e87_badge.errors import E87ProtocolError
+from e87_badge.frame import E87Frame, build_fe_frame
 from e87_badge.notify import NotifyBus
 from e87_badge.protocol import (
+    MAX_POST_EOF_RESENDS,
     UploadSession,
     _TransferState,
     _build_file_path_response,
@@ -105,6 +111,94 @@ async def test_send_window_clamps_at_eof():
     await session._send_window(data, 100, 0, 300, state)
     assert state.max_offset_delivered == 250
     assert state.total_bytes_sent == 250
+
+
+# ── Phase-9 post-EOF re-request handling ──────────────────────────────────
+
+
+def _window_ack(next_offset: int, *, win: int = 300, seq: int = 0, status: int = 0) -> bytes:
+    body = bytes(
+        (
+            seq,
+            status,
+            (win >> 8) & 0xFF,
+            win & 0xFF,
+            (next_offset >> 24) & 0xFF,
+            (next_offset >> 16) & 0xFF,
+            (next_offset >> 8) & 0xFF,
+            next_offset & 0xFF,
+        )
+    )
+    return build_fe_frame(FLAG_DATA, 0x1D, body)
+
+
+def _session_close(status: int = 0, seq: int = 0) -> bytes:
+    return build_fe_frame(FLAG_COMMAND, 0x1C, bytes((seq, status)))
+
+
+async def _run_phase9_with_acks(data: bytes, chunk_size: int, acks: list[bytes]):
+    """Drive _phase9_transfer against a pre-scripted sequence of device
+    frames, recording the offsets handed to _send_window."""
+    session = _make_session()
+    for raw in acks:
+        session._bus.push(raw)
+
+    calls: list[int] = []
+    orig = session._send_window
+
+    async def spy(data_, chunk_size_, offset, win_size, state):
+        calls.append(offset)
+        await orig(data_, chunk_size_, offset, win_size, state)
+
+    session._send_window = spy  # type: ignore[method-assign]
+    await session._phase9_transfer(data, chunk_size, "jpg")
+    return calls
+
+
+async def test_phase9_resends_legit_rerequest_after_eof():
+    """A single re-request of an already-delivered offset (failed window CRC)
+    must be re-sent, not refused."""
+    data = bytes(300)
+    acks = [
+        _window_ack(0),      # initial window ack
+        _window_ack(0),      # re-request after EOF — legitimate retransmit
+        _window_ack(300),    # now at EOF
+        _session_close(0),   # clean close
+    ]
+    calls = await _run_phase9_with_acks(data, 100, acks)
+    assert calls == [0, 0], calls  # initial send + one honoured resend
+
+
+async def test_phase9_bounds_repeated_rerequests():
+    """A badge stuck re-requesting the same offset is honoured only
+    MAX_POST_EOF_RESENDS times, then ignored — no infinite loop."""
+    data = bytes(300)
+    acks = [_window_ack(0)]                       # initial
+    acks += [_window_ack(0) for _ in range(5)]    # 5 re-requests
+    acks += [_session_close(0)]
+    calls = await _run_phase9_with_acks(data, 100, acks)
+    # 1 initial + MAX_POST_EOF_RESENDS honoured resends, rest ignored.
+    assert len(calls) == 1 + MAX_POST_EOF_RESENDS, calls
+    assert all(off == 0 for off in calls)
+
+
+# ── Session-close status handling ─────────────────────────────────────────
+
+
+def _close_frame(status: int, seq: int = 0x42) -> E87Frame:
+    body = bytes((seq, status))
+    return E87Frame(flag=0x00, cmd=0x1C, length=len(body), body=body)
+
+
+async def test_finalize_raises_on_nonzero_status():
+    session = _make_session()
+    with pytest.raises(E87ProtocolError, match="0x01"):
+        await session._finalize(_close_frame(status=0x01))
+
+
+async def test_finalize_ok_on_zero_status():
+    session = _make_session()
+    await session._finalize(_close_frame(status=0x00))  # no raise
 
 
 # ── NotifyBus session hygiene ─────────────────────────────────────────────

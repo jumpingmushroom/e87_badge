@@ -34,6 +34,12 @@ log = logging.getLogger(__name__)
 
 Writer = Callable[[bytes], Awaitable[None]]
 
+# How many times we'll honour a badge re-requesting an offset we already
+# delivered in full. A failed window CRC on the badge's side produces a
+# legitimate re-request, but a badge stuck in a bad state can re-request
+# forever — so we cap the resends per offset and then ignore further ones.
+MAX_POST_EOF_RESENDS = 3
+
 
 class UploadSession:
     def __init__(
@@ -277,11 +283,30 @@ class UploadSession:
                     )
                     file_fully_sent = True
                 elif file_fully_sent and next_offset < len(data):
-                    log.warning(
-                        "Badge re-requested offset %d after we already sent "
-                        "the full file; ignoring to avoid infinite loop",
-                        next_offset,
-                    )
+                    # We already delivered the whole file, but the badge is
+                    # asking for an earlier offset again — most likely a
+                    # window failed its CRC on the device side. Honour a
+                    # bounded number of these re-requests per offset (a real
+                    # retransmit) before refusing further ones (a wedged badge
+                    # that would otherwise loop us until the 30s timeout).
+                    resends = state.post_eof_resends.get(next_offset, 0)
+                    if resends >= MAX_POST_EOF_RESENDS:
+                        log.warning(
+                            "Badge re-requested offset %d after EOF %d times; "
+                            "ignoring further requests to avoid an infinite loop",
+                            next_offset, resends,
+                        )
+                    else:
+                        state.post_eof_resends[next_offset] = resends + 1
+                        log.info(
+                            "Badge re-requested offset %d after EOF "
+                            "(retry %d/%d) — likely a failed window CRC; "
+                            "re-sending",
+                            next_offset, resends + 1, MAX_POST_EOF_RESENDS,
+                        )
+                        await self._send_window(
+                            data, chunk_size, next_offset, win_size, state,
+                        )
                 else:
                     await self._send_window(
                         data, chunk_size, next_offset, win_size, state,
@@ -419,16 +444,23 @@ class UploadSession:
     async def _finalize(self, close_frame: E87Frame) -> None:
         body_hex = close_frame.body.hex()
         device_seq = close_frame.body[0] if close_frame.body else 0
-        status = close_frame.body[1] if len(close_frame.body) >= 2 else 0xFF
+        has_status = len(close_frame.body) >= 2
+        status = close_frame.body[1] if has_status else 0xFF
         log.info(
             "RX cmd 0x%02x (SESSION_CLOSE): body=%s deviceSeq=%d status=0x%02x",
             close_frame.cmd, body_hex, device_seq, status,
         )
+        # Ack the close first so the badge's state machine tears down cleanly,
+        # then surface a device-reported failure (bad whole-file CRC, storage
+        # error, …) to the caller instead of reporting the upload as complete.
         await self._send_fe(FLAG_RESPONSE, 0x1C, bytes((0x00, device_seq & 0xFF)))
-        if status == 0x00:
-            log.info("Upload complete")
-        else:
-            log.warning("Device reported non-zero status 0x%02x on session close", status)
+        if has_status and status != 0x00:
+            raise E87ProtocolError(
+                f"badge reported failure status 0x{status:02x} on session close"
+            )
+        if not has_status:
+            log.warning("Session close frame had no status byte; assuming success")
+        log.info("Upload complete")
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -440,6 +472,7 @@ class _TransferState:
         self.sent_chunks = 0
         self.total_bytes_sent = 0
         self.max_offset_delivered = 0
+        self.post_eof_resends: dict[int, int] = {}
 
 
 def _random_temp_name(extension: str) -> str:
