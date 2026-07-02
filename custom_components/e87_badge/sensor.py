@@ -42,6 +42,17 @@ class E87StatusSensor(CoordinatorEntity[E87Coordinator], SensorEntity):
             model="Smart Digital Badge",
         )
 
+    async def async_update(self) -> None:
+        """No-op manual update.
+
+        State is push-driven from Bluetooth adverts. `CoordinatorEntity`'s
+        default `async_update` calls `coordinator.async_request_refresh()`,
+        which the Bluetooth coordinator base classes do not implement — so a
+        `homeassistant.update_entity` call would raise AttributeError. There
+        is nothing to refresh on demand, so override it as a no-op.
+        """
+        return None
+
     @property
     def available(self) -> bool:
         """Return True if the coordinator currently sees the badge."""

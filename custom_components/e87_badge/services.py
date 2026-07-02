@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntryState
@@ -61,6 +62,14 @@ from .const import (
 from .coordinator import E87ConfigEntry, E87Coordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+# Cap on remotely-fetched images. The badge only ever displays a 368² frame,
+# so anything approaching this size is a mistake or an abuse; the cap also
+# bounds the memory a hostile/misconfigured URL can make HA buffer.
+MAX_REMOTE_IMAGE_BYTES = 20_000_000
+# Wall-clock budget for a remote fetch; without it a slow/stalled URL would
+# hang the service call indefinitely.
+REMOTE_FETCH_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
 # Services use a `target:` selector in services.yaml, so HA's service framework
@@ -139,13 +148,38 @@ async def _load_image(hass: HomeAssistant, value: str) -> bytes | Path:
         - A bare base64 string.
     """
     if value.startswith(("http://", "https://")):
+        # NOTE: the fetch is performed by the HA host, so an operator-supplied
+        # URL can reach hosts on HA's network (SSRF). This follows HA
+        # convention for admin-supplied media URLs; the size cap and timeout
+        # below bound the blast radius of a hostile or misconfigured target.
         session = async_get_clientsession(hass)
-        async with session.get(value) as resp:
-            if resp.status != 200:
-                raise HomeAssistantError(
-                    f"Failed to fetch image from {value}: HTTP {resp.status}"
-                )
-            return await resp.read()
+        try:
+            async with session.get(value, timeout=REMOTE_FETCH_TIMEOUT) as resp:
+                if resp.status != 200:
+                    raise HomeAssistantError(
+                        f"Failed to fetch image from {value}: HTTP {resp.status}"
+                    )
+                if (
+                    resp.content_length is not None
+                    and resp.content_length > MAX_REMOTE_IMAGE_BYTES
+                ):
+                    raise HomeAssistantError(
+                        f"Image at {value} is {resp.content_length} bytes, "
+                        f"over the {MAX_REMOTE_IMAGE_BYTES}-byte limit"
+                    )
+                # Read one byte past the cap so a missing/lying Content-Length
+                # can't smuggle an oversized body through.
+                data = await resp.content.read(MAX_REMOTE_IMAGE_BYTES + 1)
+                if len(data) > MAX_REMOTE_IMAGE_BYTES:
+                    raise HomeAssistantError(
+                        f"Image at {value} exceeds the "
+                        f"{MAX_REMOTE_IMAGE_BYTES}-byte limit"
+                    )
+                return data
+        except aiohttp.ClientError as exc:
+            raise HomeAssistantError(
+                f"Failed to fetch image from {value}: {exc}"
+            ) from exc
 
     if value.startswith("data:"):
         try:
