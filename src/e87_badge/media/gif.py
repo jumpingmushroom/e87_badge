@@ -39,11 +39,12 @@ def gif_to_avi(
     jpeg_frames: list[bytes] = []
     durations_ms: list[int] = []
 
-    for frame in ImageSequence.Iterator(gif):
-        durations_ms.append(int(frame.info.get("duration", 100)))
-        rgb = frame.convert("RGB")
-        squared = _center_square_368(rgb)
-        jpeg_frames.append(_encode_frame_jpeg(squared))
+    with gif:
+        for frame in ImageSequence.Iterator(gif):
+            durations_ms.append(int(frame.info.get("duration", 100)))
+            rgb = frame.convert("RGB")
+            squared = _center_square_368(rgb)
+            jpeg_frames.append(_encode_frame_jpeg(squared))
 
     if not jpeg_frames:
         raise ValueError(f"no frames in GIF: {src}")

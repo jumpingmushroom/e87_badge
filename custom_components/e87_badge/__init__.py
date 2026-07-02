@@ -55,13 +55,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: E87ConfigEntry) -> bool
     """Unload a config entry."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    # If this was the last E87 entry, tear the services back down.
-    remaining = [
-        e
-        for e in hass.config_entries.async_entries(DOMAIN)
-        if e.entry_id != entry.entry_id
-    ]
-    if not remaining:
-        async_unload_services(hass)
+    # If this was the last E87 entry, tear the services back down — but only
+    # if the platforms actually unloaded, otherwise we'd leave a still-loaded
+    # entry without its services.
+    if unloaded:
+        remaining = [
+            e
+            for e in hass.config_entries.async_entries(DOMAIN)
+            if e.entry_id != entry.entry_id
+        ]
+        if not remaining:
+            async_unload_services(hass)
 
     return unloaded

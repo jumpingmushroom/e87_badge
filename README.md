@@ -21,7 +21,7 @@ See [`docs/protocol.md`](docs/protocol.md) for the full wire-level protocol writ
 ## Install — Python library + CLI
 
 ```bash
-pip install git+https://github.com/jumpingmushroom/e87_badge@v0.1.0
+pip install git+https://github.com/jumpingmushroom/e87_badge@v0.1.14
 ```
 
 Usage:
@@ -72,7 +72,7 @@ The custom component lives under `custom_components/e87_badge/` and installs the
 
 ```bash
 cd /config
-git clone --branch v0.1.0 https://github.com/jumpingmushroom/e87_badge
+git clone --branch v0.1.14 https://github.com/jumpingmushroom/e87_badge
 ln -s e87_badge/custom_components/e87_badge custom_components/e87_badge
 ```
 
