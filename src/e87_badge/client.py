@@ -232,15 +232,18 @@ class E87Client:
         session = UploadSession(self._write_ae01, self._write_fd02, self._bus)
         await session.run(data, extension=extension)
 
-    async def _resolve_ble_device(self) -> BLEDevice | str:
+    async def _resolve_ble_device(self) -> BLEDevice:
         if isinstance(self._input, str):
             resolved = await find_one(address=self._input, timeout=15.0)
             if resolved is None:
-                log.warning(
-                    "Scanner did not surface %s; passing MAC directly to BleakClient",
-                    self._input,
+                # We can't fall back to a bare MAC: bleak_retry_connector's
+                # establish_connection requires a BLEDevice (it dereferences
+                # device.details/device.address), so handing it the string
+                # crashes with a confusing AttributeError. Fail fast instead.
+                raise E87ConnectError(
+                    f"Badge {self._input} was not found by the scanner; "
+                    "ensure it is powered on and advertising, then retry."
                 )
-                return self._input
             return resolved
         return self._input
 

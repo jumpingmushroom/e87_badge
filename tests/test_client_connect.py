@@ -90,6 +90,22 @@ async def test_auth_success_after_transient_failure(patched_client):
     await client.disconnect()
 
 
+async def test_unresolved_mac_fails_fast(monkeypatch):
+    """When the scanner can't surface the MAC, connect() must raise a clear
+    E87ConnectError rather than handing a bare string to establish_connection
+    (which requires a BLEDevice and would crash with an AttributeError)."""
+
+    async def no_device(address=None, timeout=None):
+        return None
+
+    monkeypatch.setattr(client_mod, "find_one", no_device)
+
+    client = E87Client("AA:BB:CC:DD:EE:FF")
+    with pytest.raises(E87ConnectError, match="not found by the scanner"):
+        await client.connect()
+    assert client._client is None
+
+
 async def test_stale_bus_frames_cleared_before_auth(patched_client):
     seen_at_auth: list[bytes] = []
 
