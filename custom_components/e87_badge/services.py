@@ -154,10 +154,13 @@ async def _load_image(hass: HomeAssistant, value: str) -> bytes | Path:
         except (binascii.Error, ValueError) as exc:
             raise HomeAssistantError(f"Invalid data URI: {exc}") from exc
 
-    # Try filesystem path first.
+    # Try filesystem path first. The existence/allowlist checks touch the
+    # filesystem, so run them in the executor to keep the event loop free.
     path = Path(value)
-    if path.is_absolute() and path.exists():
-        if not hass.config.is_allowed_path(str(path)):
+    if path.is_absolute() and await hass.async_add_executor_job(path.exists):
+        if not await hass.async_add_executor_job(
+            hass.config.is_allowed_path, str(path)
+        ):
             raise HomeAssistantError(
                 f"Path {path} is not in allowlist_external_dirs"
             )

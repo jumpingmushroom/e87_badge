@@ -155,7 +155,11 @@ class E87Client:
         """Encode and send a static image. Accepts a path, bytes, or PIL Image."""
         from .media.image import encode_jpeg
 
-        jpeg = encode_jpeg(image)
+        # PIL decode/resize/JPEG bracketing is CPU-bound and blocking; run it
+        # off the event loop so callers on a shared loop (Home Assistant) don't
+        # stall the whole instance — including the BLE proxy traffic this
+        # upload itself depends on.
+        jpeg = await asyncio.to_thread(encode_jpeg, image)
         await self._send_blob(jpeg, extension=EXTENSION_STATIC)
 
     async def send_text(
@@ -170,7 +174,9 @@ class E87Client:
         """Render `text` centered on a 368² frame and send as a static image."""
         from .media.image import render_text_image
 
-        jpeg = render_text_image(text, font=font, size=size, colour=colour, bg=bg)
+        jpeg = await asyncio.to_thread(
+            render_text_image, text, font=font, size=size, colour=colour, bg=bg
+        )
         await self._send_blob(jpeg, extension=EXTENSION_STATIC)
 
     async def send_slideshow(
@@ -182,13 +188,15 @@ class E87Client:
     ) -> None:
         from .media.slideshow import build_slideshow
 
-        avi = build_slideshow(images, frame_ms=frame_ms, loop=loop)
+        avi = await asyncio.to_thread(
+            build_slideshow, images, frame_ms=frame_ms, loop=loop
+        )
         await self._send_blob(avi, extension=EXTENSION_ANIMATED)
 
     async def send_gif(self, src: "str | pathlib.Path | bytes", *, max_fps: int = 24) -> None:
         from .media.gif import gif_to_avi
 
-        avi = gif_to_avi(src, max_fps=max_fps)
+        avi = await asyncio.to_thread(gif_to_avi, src, max_fps=max_fps)
         await self._send_blob(avi, extension=EXTENSION_ANIMATED)
 
     async def send_danmaku(
@@ -204,7 +212,8 @@ class E87Client:
     ) -> None:
         from .media.danmaku import render_danmaku
 
-        avi = render_danmaku(
+        avi = await asyncio.to_thread(
+            render_danmaku,
             text,
             fg=fg,
             bg=bg,
