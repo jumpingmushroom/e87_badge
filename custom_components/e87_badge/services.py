@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -260,11 +262,39 @@ async def _coordinators_for_call(
     return coordinators
 
 
+async def _dispatch(
+    coordinators: list[E87Coordinator],
+    send: Callable[[E87Coordinator], Awaitable[None]],
+) -> None:
+    """Run `send(coord)` for every targeted badge concurrently, isolating
+    per-badge failures.
+
+    A single out-of-range or erroring badge must not block delivery to the
+    others (the previous sequential `await` in a loop aborted the whole call on
+    the first failure). Failures are collected and re-raised as one aggregate
+    HomeAssistantError naming each badge that failed.
+    """
+    results = await asyncio.gather(
+        *(send(coord) for coord in coordinators),
+        return_exceptions=True,
+    )
+    failures = [
+        f"{coord.address}: {res}"
+        for coord, res in zip(coordinators, results)
+        if isinstance(res, Exception)
+    ]
+    if failures:
+        raise HomeAssistantError(
+            f"Send failed for {len(failures)} of {len(coordinators)} "
+            f"badge(s): {'; '.join(failures)}"
+        )
+
+
 async def _handle_send_image(call: ServiceCall) -> None:
     hass = call.hass
     image = await _load_image(hass, call.data[ATTR_IMAGE])
-    for coord in await _coordinators_for_call(hass, call):
-        await coord.send_image(image)
+    coordinators = await _coordinators_for_call(hass, call)
+    await _dispatch(coordinators, lambda coord: coord.send_image(image))
 
 
 async def _handle_send_text(call: ServiceCall) -> None:
@@ -276,24 +306,26 @@ async def _handle_send_text(call: ServiceCall) -> None:
     }
     if ATTR_FONT in call.data:
         opts["font"] = call.data[ATTR_FONT]
-    for coord in await _coordinators_for_call(hass, call):
-        await coord.send_text(call.data[ATTR_TEXT], **opts)
+    coordinators = await _coordinators_for_call(hass, call)
+    await _dispatch(
+        coordinators, lambda coord: coord.send_text(call.data[ATTR_TEXT], **opts)
+    )
 
 
 async def _handle_send_slideshow(call: ServiceCall) -> None:
     hass = call.hass
     images = await _load_images(hass, call.data[ATTR_IMAGES])
     opts = {"frame_ms": call.data[ATTR_FRAME_MS]}
-    for coord in await _coordinators_for_call(hass, call):
-        await coord.send_slideshow(images, **opts)
+    coordinators = await _coordinators_for_call(hass, call)
+    await _dispatch(coordinators, lambda coord: coord.send_slideshow(images, **opts))
 
 
 async def _handle_send_gif(call: ServiceCall) -> None:
     hass = call.hass
     src = await _load_image(hass, call.data[ATTR_IMAGE])
     opts = {"max_fps": call.data[ATTR_MAX_FPS]}
-    for coord in await _coordinators_for_call(hass, call):
-        await coord.send_gif(src, **opts)
+    coordinators = await _coordinators_for_call(hass, call)
+    await _dispatch(coordinators, lambda coord: coord.send_gif(src, **opts))
 
 
 async def _handle_send_danmaku(call: ServiceCall) -> None:
@@ -307,8 +339,10 @@ async def _handle_send_danmaku(call: ServiceCall) -> None:
     }
     if ATTR_FONT in call.data:
         opts["font"] = call.data[ATTR_FONT]
-    for coord in await _coordinators_for_call(hass, call):
-        await coord.send_danmaku(call.data[ATTR_TEXT], **opts)
+    coordinators = await _coordinators_for_call(hass, call)
+    await _dispatch(
+        coordinators, lambda coord: coord.send_danmaku(call.data[ATTR_TEXT], **opts)
+    )
 
 
 @callback

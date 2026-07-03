@@ -91,7 +91,22 @@ class E87Client:
                     max_attempts=3,
                 )
             except Exception as exc:
-                raise E87ConnectError(f"could not connect to badge: {exc}") from exc
+                # Treat an establish failure like the subscribe/auth failures
+                # below: record it, clean up best-effort, and retry the whole
+                # cycle rather than aborting on the first miss. establish_connection
+                # retries internally, but a full disconnect between attempts also
+                # frees a proxy slot the failed attempt may still be holding.
+                last_exc = exc
+                log.warning(
+                    "Attempt %d/3: establish_connection failed (%s); "
+                    "retrying from scratch",
+                    attempt,
+                    exc,
+                )
+                await self._best_effort_disconnect()
+                if attempt < 3:
+                    await asyncio.sleep(3.0)
+                continue
 
             log.info(
                 "Connect attempt %d/3: connected, MTU=%s",

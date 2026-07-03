@@ -106,6 +106,48 @@ async def test_unresolved_mac_fails_fast(monkeypatch):
     assert client._client is None
 
 
+async def test_establish_failure_retries_then_succeeds(patched_client):
+    """A transient establish_connection failure must count as one failed
+    attempt (clean up + retry the full cycle), not abort connect() outright."""
+    calls = 0
+
+    async def flaky_establish(cls, device, name=None, max_attempts=None, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls < 2:
+            raise RuntimeError("proxy slot busy")
+        return _FakeBleakClient()
+
+    async def ok_auth(write_ae01, bus):
+        return None
+
+    patched_client.setattr(client_mod, "establish_connection", flaky_establish)
+    patched_client.setattr(client_mod, "do_auth", ok_auth)
+
+    client = E87Client("AA:BB:CC:DD:EE:FF")
+    await client.connect()
+
+    assert calls == 2
+    assert client._authed
+    assert client._client is _FakeBleakClient.instances[-1]
+    await client.disconnect()
+
+
+async def test_establish_failure_all_attempts_raises(patched_client):
+    """When establish_connection fails on all 3 attempts, connect() raises the
+    aggregate reconnect error carrying the last establish exception."""
+
+    async def always_fail(cls, device, name=None, max_attempts=None, **kwargs):
+        raise RuntimeError("proxy down")
+
+    patched_client.setattr(client_mod, "establish_connection", always_fail)
+
+    client = E87Client("AA:BB:CC:DD:EE:FF")
+    with pytest.raises(E87ConnectError, match="3 full reconnect"):
+        await client.connect()
+    assert client._client is None
+
+
 async def test_stale_bus_frames_cleared_before_auth(patched_client):
     seen_at_auth: list[bytes] = []
 

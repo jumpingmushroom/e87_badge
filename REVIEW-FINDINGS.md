@@ -60,6 +60,8 @@ Small, well-organized codebase (~3.8k lines): a Python BLE library (`src/e87_bad
 - **Verification:** In a dev HA instance, call `homeassistant.update_entity` targeting the badge sensor and check the log for `AttributeError: ... async_request_refresh`.
 
 ### [SEV-4] `connect()`'s "3 full attempts" retry loop doesn't cover connection-establishment failures
+**FIXED:** an `establish_connection` failure now records `last_exc`, disconnects best-effort, sleeps, and `continue`s like the subscribe/auth paths, so all three attempts are honoured. Added `test_establish_failure_retries_then_succeeds` and `test_establish_failure_all_attempts_raises`.
+
 - **File:** src/e87_badge/client.py:85-94
 - **Issue:** Inside the retry loop, a failure from `establish_connection` raises `E87ConnectError` immediately instead of counting as a failed attempt like subscribe/auth failures do. The design intent ("3 full reconnect attempts", per the final error message) is only applied to post-connect failures. `establish_connection` does retry internally (`max_attempts=3`), so this is inconsistency rather than missing resilience.
 - **Evidence:** `except Exception as exc: raise E87ConnectError(...)` at the top of the `for attempt` loop vs. `continue` for the other two failure classes.
@@ -67,6 +69,8 @@ Small, well-organized codebase (~3.8k lines): a Python BLE library (`src/e87_bad
 - **Verification:** Unit test alongside `tests/test_client_connect.py`: make `establish_connection` fail once then succeed; assert `connect()` eventually succeeds.
 
 ### [SEV-4] Multi-badge service call stops at the first failing badge
+**FIXED:** added `_dispatch`, which runs every targeted coordinator via `asyncio.gather(return_exceptions=True)`, isolates per-badge failures, and raises a single aggregate `HomeAssistantError` naming each badge that failed. All five `_handle_send_*` handlers route through it. Logic verified in isolation (HA isn't importable in the dev venv).
+
 - **File:** custom_components/e87_badge/services.py:226-274
 - **Issue:** Each `_handle_send_*` loops coordinators sequentially with `await coord.send_*(...)`; the first badge that fails raises `HomeAssistantError` and the remaining targeted badges never receive the content. With an area target containing several badges, one out-of-range badge blocks the rest.
 - **Evidence:** `for coord in await _coordinators_for_call(hass, call): await coord.send_image(image)` — no per-coordinator error isolation.
@@ -74,6 +78,8 @@ Small, well-organized codebase (~3.8k lines): a Python BLE library (`src/e87_bad
 - **Verification:** Unit test with two mock coordinators where the first raises; assert the second's `send_image` was still awaited and the raised error mentions the failing badge.
 
 ### [SEV-4] CLI discovery matcher is weaker than the HA/config-flow matcher
+**FIXED:** `_looks_like_badge` now also matches the 0xFD00 service UUID and manufacturer ID 28083, mirroring `config_flow._is_e87`; it takes the full `advertisement_data` so the manufacturer-data fingerprint is available. Added `tests/test_discovery.py` (5 cases, incl. manufacturer-ID-only).
+
 - **File:** src/e87_badge/discovery.py:16-19
 - **Issue:** `_looks_like_badge` matches only `local_name == "E87"` or an advertised AE00 service UUID. The config flow and `manifest.json` additionally match the passive-scan-visible fingerprints documented in `const.py` (`ADVERT_SERVICE_UUID_16` 0xFD00 and manufacturer ID 28083). `const.py:12-15` itself notes the local name appears only in the scan response. `e87 discover` therefore can miss a badge that HA discovers, depending on adapter scan behavior. Low impact because `BleakScanner` defaults to active scanning, but it's drift between two matchers for the same device.
 - **Evidence:** Compare `discovery._looks_like_badge` with `config_flow._is_e87` (config_flow.py:26-44).
@@ -109,8 +115,9 @@ Small, well-organized codebase (~3.8k lines): a Python BLE library (`src/e87_bad
 ## Fix Session Summary
 
 Fixes applied in severity order (no SEV-1 present). Full test suite green
-after each change: **59 passed, 3 skipped** (hardware-gated), up from 52
-passed at review time (7 new regression tests added).
+after each change: **66 passed, 3 skipped** (hardware-gated), up from 52
+passed at review time (14 new regression tests added). Every finding —
+SEV-2 through SEV-4 — is now fixed; nothing deferred.
 
 ### Fixed
 - **SEV-2 — event-loop blocking:** all `E87Client.send_*` now offload PIL/media
@@ -135,17 +142,22 @@ passed at review time (7 new regression tests added).
 - **SEV-4 (trivial) — teardown/GIF handle:** gated service removal on
   `unloaded`; context-managed the GIF image.
   *(commit: with the README/hygiene changes)*
+- **SEV-4 — connect() retry doesn't cover establish failures:** an
+  `establish_connection` failure now counts as a failed attempt (clean up +
+  retry) instead of aborting connect(). New connect tests.
+- **SEV-4 — multi-badge service stops at first failure:** new `_dispatch`
+  runs all coordinators via `asyncio.gather(return_exceptions=True)`, isolates
+  per-badge failures, and raises one aggregate error naming the failed badges.
+- **SEV-4 — CLI discovery matcher drift:** `_looks_like_badge` now mirrors
+  `config_flow._is_e87` (0xFD00 UUID + manufacturer ID 28083). New
+  `tests/test_discovery.py`.
+  *(commit: cover establish failures in connect retry; isolate multi-badge
+  sends; align CLI discovery matcher)*
 
 ### Disputed
 - None. All findings re-verified as valid before fixing; the two flagged as
   uncertain in the report (coordinator `async_request_refresh`, and the
   post-EOF trade-off) were both confirmed against source.
 
-### Deferred (SEV-4, non-trivial — left for a follow-up)
-- **connect() retry doesn't cover establish-connection failures** — touches the
-  critical connect loop; `establish_connection` already retries internally, so
-  low urgency.
-- **Multi-badge service stops at first failure** — needs `asyncio.gather` +
-  aggregate error handling; behavioral change worth its own change.
-- **CLI discovery matcher weaker than config-flow matcher** — needs care with
-  `advertisement_data` shape; low impact given active scanning.
+### Deferred
+- None. All SEV-2/3/4 findings are fixed.

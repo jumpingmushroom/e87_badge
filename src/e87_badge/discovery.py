@@ -3,20 +3,38 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterable
 
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 
-from .const import AE_SERVICE_UUID, LOCAL_NAME
+from .const import (
+    ADVERT_MANUFACTURER_ID,
+    ADVERT_SERVICE_UUID_16,
+    AE_SERVICE_UUID,
+    LOCAL_NAME,
+)
 
 log = logging.getLogger(__name__)
 
 
-def _looks_like_badge(device: BLEDevice, advertised_uuids: Iterable[str]) -> bool:
+def _looks_like_badge(device: BLEDevice, advertisement_data) -> bool:
+    """Mirror the HA config-flow matcher (`config_flow._is_e87`).
+
+    Match on the local name (scan-response only, needs active scan), the AE00
+    or 0xFD00 service UUID, or the JieLi manufacturer ID — the latter two are
+    passive-safe fingerprints, so a passive scanner that never sees the name
+    still identifies the badge.
+    """
     if (device.name or "").strip() == LOCAL_NAME:
         return True
-    return AE_SERVICE_UUID.lower() in {u.lower() for u in advertised_uuids}
+    uuids = {
+        u.lower()
+        for u in (getattr(advertisement_data, "service_uuids", None) or [])
+    }
+    if AE_SERVICE_UUID.lower() in uuids or ADVERT_SERVICE_UUID_16.lower() in uuids:
+        return True
+    mfr = getattr(advertisement_data, "manufacturer_data", None) or {}
+    return ADVERT_MANUFACTURER_ID in mfr
 
 
 async def discover(timeout: float = 10.0) -> list[BLEDevice]:
@@ -24,8 +42,7 @@ async def discover(timeout: float = 10.0) -> list[BLEDevice]:
     discovered: dict[str, BLEDevice] = {}
 
     def detection_callback(device: BLEDevice, advertisement_data) -> None:
-        uuids = getattr(advertisement_data, "service_uuids", None) or []
-        if _looks_like_badge(device, uuids):
+        if _looks_like_badge(device, advertisement_data):
             discovered[device.address] = device
 
     async with BleakScanner(detection_callback=detection_callback):
